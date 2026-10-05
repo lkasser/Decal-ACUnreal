@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>AC.Host.Cli</RootNamespace>
+    <AssemblyName>achost</AssemblyName>
+    <Description>Runs the plugin host over a live relay or a recorded capture.</Description>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The host itself: relay, plugins, overlay and control pipes, shared with the Decal Agent. -->
+    <ProjectReference Include="..\AC.Host.Runtime\AC.Host.Runtime.csproj" />
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj" />
+    <ProjectReference Include="..\AC.Proxy\AC.Proxy.csproj" />
+    <ProjectReference Include="..\AC.Protocol\AC.Protocol.csproj" />
+    <!-- Built first so its output can be laid out as a plugin below; not referenced by the
+         host, which must not know about any particular plugin. The Decal compatibility layer
+         runs Decal's own plugins. Other plugins, such as Virindi Tank (a repository of its
+         own), are installed into plugins\ beside achost.exe. -->
+    <ProjectReference Include="..\Decal.Compat\Decal.Compat.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- Lay the Decal compatibility layer out where `achost` looks by default, so a fresh
+       build runs with it and nothing has to be copied by hand. -->
+  <Target Name="LayoutPlugins" AfterTargets="Build">
+    <ItemGroup>
+      <DecalCompatFiles Include="..\Decal.Compat\bin\$(Configuration)\$(TargetFramework)\*.dll;..\Decal.Compat\bin\$(Configuration)\$(TargetFramework)\*.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DecalCompatFiles)" DestinationFolder="$(OutDir)plugins\Decal.Compat" SkipUnchangedFiles="true" />
+    <ItemGroup>
+      <DecalCompatNative Include="..\Decal.Compat\bin\$(Configuration)\$(TargetFramework)\native\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DecalCompatNative)" DestinationFolder="$(OutDir)plugins\Decal.Compat\native" SkipUnchangedFiles="true" />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Host.Overlay\AC.Host.Overlay.csproj" />
+  </ItemGroup>
+
+</Project>

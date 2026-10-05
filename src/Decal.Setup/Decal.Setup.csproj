@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>DecalAgentSetup</AssemblyName>
+    <RootNamespace>Decal.Setup</RootNamespace>
+    <Product>Decal Agent</Product>
+    <AssemblyTitle>Decal Agent Setup</AssemblyTitle>
+    <Description>Installs Decal Agent for the player running it: no administrator, and no runtime to install first.</Description>
+    <!-- The Agent's version, which tools\build-installers.ps1 passes in; this is only the default. -->
+    <Version>1.0.0</Version>
+    <ApplicationIcon>..\Decal.Agent\Resources\Decal.ico</ApplicationIcon>
+    <ApplicationManifest>..\Setup.Common\setup.manifest</ApplicationManifest>
+    <ApplicationDefaultFont>Microsoft Sans Serif, 8.25pt</ApplicationDefaultFont>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+  </PropertyGroup>
+
+  <!-- Published for a runtime (tools\build-installers.ps1 publishes it for win-x64), it is one
+       file a player can run on a machine with no .NET: the runtime inside it, compressed. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Setup.Common\Setup.Common.csproj" />
+  </ItemGroup>
+
+  <!-- What it installs: a zip of the published Agent, made by tools\build-installers.ps1 and
+       passed in as SetupPayload. Built without one, the setup still runs, and says it has
+       nothing to install. -->
+  <ItemGroup Condition="'$(SetupPayload)' != ''">
+    <EmbeddedResource Include="$(SetupPayload)" LogicalName="Setup.Payload.zip" />
+  </ItemGroup>
+
+  <Target Name="CheckSetupPayload" BeforeTargets="BeforeBuild" Condition="'$(SetupPayload)' != '' And !Exists('$(SetupPayload)')">
+    <Error Text="SetupPayload is $(SetupPayload), and there is no such file." />
+  </Target>
+
+</Project>

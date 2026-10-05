@@ -1,0 +1,18 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+# The players' installer, from tools/build-installers.ps1.
+dist/
+*.user
+*.suo
+.vs/
+
+# Scratch
+*.log
+logs/
+
+# Session captures can contain account names; never commit one by accident.
+*.acap

@@ -1,0 +1,105 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Decal.Interop.Core</RootNamespace>
+    <AssemblyName>Decal.Interop.Core</AssemblyName>
+    <Description>The few types of Decal's COM interop assembly that .NET plugins reach past Decal.Adapter for - the plugin site and the client hooks' events - as plain .NET types, since there is no COM Decal behind them.</Description>
+    <!-- Decal 3.0's interop identity: its version and the interop assemblies' public key. -->
+    <AssemblyVersion>2.9.8.3</AssemblyVersion>
+    <FileVersion>2.9.8.3</FileVersion>
+    <SignAssembly>true</SignAssembly>
+    <PublicSign>true</PublicSign>
+    <AssemblyOriginatorKeyFile>DecalInteropPublicKey.snk</AssemblyOriginatorKeyFile>
+    <!-- Referencing projects compile against the patched assembly itself, not a reference
+         assembly that would still say IntPtr. -->
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+  </PropertyGroup>
+
+  <!-- A delegate generated from a COM type library takes its method pointer as UIntPtr, and
+       plugins built against Decal's interop assemblies call that constructor; C# can only
+       declare IntPtr. So after compiling, the delegate constructors' signature is changed from
+       (object, native int) to (object, native uint): one byte of one blob, since identical
+       signatures share a blob. Nothing else here has that signature - the assembly's only
+       methods with bodies are none, and its only (object, native int) methods are the
+       delegates' constructors - so the blob is found by its bytes, within the blob heap.
+       Idempotent, so a build that skipped compiling leaves an already patched file alone. -->
+  <UsingTask TaskName="PatchComDelegateConstructors" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Assembly ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        byte[] image = File.ReadAllBytes(Assembly);
+
+        // The metadata root ("BSJB"), then its stream headers: offset, size, name.
+        int root = -1;
+        for (int i = 0; i + 4 <= image.Length; i++)
+        {
+            if (image[i] == 0x42 && image[i + 1] == 0x53 && image[i + 2] == 0x4A && image[i + 3] == 0x42)
+            {
+                root = i;
+                break;
+            }
+        }
+
+        if (root < 0)
+        {
+            Log.LogError("No metadata in " + Assembly + ".");
+            return false;
+        }
+
+        int versionLength = BitConverter.ToInt32(image, root + 12);
+        int at = root + 16 + versionLength + 2;
+        int streams = BitConverter.ToUInt16(image, at);
+        at += 2;
+
+        int blobStart = -1, blobSize = 0;
+        for (int s = 0; s < streams; s++)
+        {
+            int offset = BitConverter.ToInt32(image, at);
+            int size = BitConverter.ToInt32(image, at + 4);
+            int nameStart = at + 8, nameEnd = nameStart;
+            while (image[nameEnd] != 0)
+                nameEnd++;
+
+            if (Encoding.ASCII.GetString(image, nameStart, nameEnd - nameStart) == "#Blob")
+            {
+                blobStart = root + offset;
+                blobSize = size;
+            }
+
+            at = nameStart + ((nameEnd - nameStart + 1 + 3) & ~3);
+        }
+
+        // Length 5: HASTHIS, 2 parameters, void, object, native int.
+        byte[] wanted = { 5, 0x20, 0x02, 0x01, 0x1C, 0x18 };
+        int patched = 0;
+        for (int i = blobStart; blobStart >= 0 && i + wanted.Length <= blobStart + blobSize; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < wanted.Length && match; j++)
+                match = image[i + j] == wanted[j];
+
+            if (match)
+            {
+                image[i + 5] = 0x19;
+                patched++;
+            }
+        }
+
+        if (patched > 0)
+        {
+            File.WriteAllBytes(Assembly, image);
+            Log.LogMessage(MessageImportance.Normal, "Gave the delegate constructors in " + Assembly + " COM's UIntPtr method pointer.");
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="PatchComDelegateConstructors" AfterTargets="CoreCompile" Condition="Exists('@(IntermediateAssembly->'%(FullPath)')')">
+    <PatchComDelegateConstructors Assembly="@(IntermediateAssembly->'%(FullPath)')" />
+  </Target>
+
+</Project>

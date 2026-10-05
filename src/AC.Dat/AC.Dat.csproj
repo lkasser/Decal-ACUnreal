@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AC.Dat</RootNamespace>
+    <AssemblyName>AC.Dat</AssemblyName>
+    <Description>Reader for the Asheron's Call client data files: the DAT container, and the spell, skill and palette tables the host needs to turn ids into names, formulas and colours.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Images the host draws with that no install carries as a file: Decal's own icon,
+         taken from its agent's resources. -->
+    <EmbeddedResource Include="Images\*.png" LogicalName="AC.Dat.Images.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AC.Dat.Tests" />
+    <!-- So the macro's tests can describe a handful of spells without a client install. -->
+    <InternalsVisibleTo Include="AC.Host.Tests" />
+    <!-- The Virindi Tank repository's tests, which build against this repository as a git
+         submodule and set up world state the way this repository's own tests do. -->
+    <InternalsVisibleTo Include="VirindiTank.Tests" />
+  </ItemGroup>
+
+</Project>

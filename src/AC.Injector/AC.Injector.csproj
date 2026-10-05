@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>AC.Injector</RootNamespace>
+    <AssemblyName>acinject</AssemblyName>
+    <Description>Loads a native DLL into a running client with LoadLibraryW on a remote thread, and says in words why it will not when it will not.</Description>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

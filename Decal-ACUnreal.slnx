@@ -1,0 +1,37 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AC.Dat/AC.Dat.csproj" />
+    <Project Path="src/AC.Host.Cli/AC.Host.Cli.csproj" />
+    <Project Path="src/AC.Host.Overlay/AC.Host.Overlay.csproj" />
+    <Project Path="src/AC.Host.Runtime/AC.Host.Runtime.csproj" />
+    <Project Path="src/AC.Host.Ui/AC.Host.Ui.csproj" />
+    <Project Path="src/AC.Host/AC.Host.csproj" />
+    <Project Path="src/AC.Injector/AC.Injector.csproj" />
+    <Project Path="src/AC.Protocol/AC.Protocol.csproj" />
+    <Project Path="src/AC.Proxy.Cli/AC.Proxy.Cli.csproj" />
+    <Project Path="src/AC.Proxy/AC.Proxy.csproj" />
+    <Project Path="src/Decal.Adapter/Decal.Adapter.csproj" />
+    <Project Path="src/Decal.Agent/Decal.Agent.csproj" />
+    <Project Path="src/Decal.Compat/Decal.Compat.csproj" />
+    <Project Path="src/Decal.FileService/Decal.FileService.csproj" />
+    <Project Path="src/Decal.Interop.Core/Decal.Interop.Core.csproj" />
+    <Project Path="src/Decal.Setup/Decal.Setup.csproj" />
+    <Project Path="src/Microsoft.DirectX/Microsoft.DirectX.csproj" />
+    <Project Path="src/Setup.Common/Setup.Common.csproj" />
+    <Project Path="src/Setup.Uninstall/Setup.Uninstall.csproj" />
+    <Project Path="src/VirindiViewService/VirindiViewService.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AC.Dat.Tests/AC.Dat.Tests.csproj" />
+    <Project Path="tests/AC.Host.Tests/AC.Host.Tests.csproj" />
+    <Project Path="tests/AC.Overlay.Tests/AC.Overlay.Tests.csproj" />
+    <Project Path="tests/AC.Protocol.Tests/AC.Protocol.Tests.csproj" />
+    <Project Path="tests/AC.Proxy.Tests/AC.Proxy.Tests.csproj" />
+    <Project Path="tests/Setup.Tests/Setup.Tests.csproj" />
+    <Project Path="tests/plugins/Unversioned.Plugin/Unversioned.Plugin.csproj" />
+    <Project Path="tests/plugins/TooNew.Plugin/TooNew.Plugin.csproj" />
+    <Project Path="tests/plugins/Counting.Plugin/Counting.Plugin.csproj" />
+    <Project Path="tests/decal-plugins/AutoWireupExamplePlugin/AutoWireupExamplePlugin.csproj" />
+    <Project Path="tests/decal-plugins/TroubledPlugin/TroubledPlugin.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AC.Proxy</RootNamespace>
+    <AssemblyName>AC.Proxy</AssemblyName>
+    <Description>UDP relay between an Asheron's Call client and an ACE/GDLE server that observes the session as it passes. Forwards byte-for-byte; interpretation never gates delivery.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Protocol\AC.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AC.Proxy.Tests" />
+  </ItemGroup>
+
+</Project>

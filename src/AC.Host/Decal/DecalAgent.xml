@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<view title="Decal" width="420" height="232">
+	<control progid="DecalControls.Notebook" name="tabs">
+		<page label="Plugins">
+			<control progid="DecalControls.FixedLayout" clipped="">
+				<control progid="DecalControls.StaticText" name="lblOn" left="4" top="2" width="20" height="16" fontsize="16" fontstyle=" bold" text="On"/>
+				<control progid="DecalControls.StaticText" name="lblName" left="26" top="2" width="140" height="16" fontsize="16" fontstyle=" bold" text="Plugin"/>
+				<control progid="DecalControls.StaticText" name="lblVersion" left="170" top="2" width="56" height="16" fontsize="16" fontstyle=" bold" text="Version"/>
+				<control progid="DecalControls.StaticText" name="lblStatus" left="230" top="2" width="140" height="16" fontsize="16" fontstyle=" bold" text="Status"/>
+				<control progid="DecalControls.List" name="lstPlugins" left="0" top="18" width="420" height="110">
+					<column progid="DecalControls.CheckColumn" name="clOn" fixedwidth="16"/>
+					<column progid="DecalControls.TextColumn" name="clName" fixedwidth="140"/>
+					<column progid="DecalControls.TextColumn" name="clVersion" fixedwidth="56"/>
+					<column progid="DecalControls.TextColumn" name="clStatus" fixedwidth="140"/>
+					<column progid="DecalControls.TextColumn" name="clReload" fixedwidth="48"/>
+				</control>
+				<control progid="DecalControls.StaticText" name="lblPluginDetail" left="4" top="131" width="412" height="30" text="Click a plugin to see why it stands as it does."/>
+				<control progid="DecalControls.PushButton" name="btnRescan" left="4" top="164" width="100" height="22" text="Find New"/>
+				<control progid="DecalControls.PushButton" name="btnReloadAll" left="110" top="164" width="100" height="22" text="Reload All"/>
+				<control progid="DecalControls.StaticText" name="lblPluginHelp" left="216" top="164" width="200" height="32" text="Tick to switch a plugin on or off here. Reload picks up a rebuilt plugin."/>
+			</control>
+		</page>
+		<page label="Options">
+			<control progid="DecalControls.FixedLayout" clipped="">
+				<control progid="DecalControls.Checkbox" name="chkAct" left="8" top="8" width="300" height="20" text="Let plugins act in the game"/>
+				<control progid="DecalControls.StaticText" name="lblActHelp" left="26" top="28" width="380" height="32" text="Off, plugins only watch. On, they may use, cast, attack and move for you."/>
+				<control progid="DecalControls.StaticText" name="lblServerCaption" left="8" top="68" width="80" height="16" text="Server:"/>
+				<control progid="DecalControls.StaticText" name="lblServer" left="92" top="68" width="320" height="16" text=""/>
+				<control progid="DecalControls.StaticText" name="lblCharacterCaption" left="8" top="86" width="80" height="16" text="Character:"/>
+				<control progid="DecalControls.StaticText" name="lblCharacter" left="92" top="86" width="320" height="16" text=""/>
+				<control progid="DecalControls.StaticText" name="lblPositionCaption" left="8" top="104" width="80" height="16" text="Position:"/>
+				<control progid="DecalControls.StaticText" name="lblPosition" left="92" top="104" width="320" height="16" text=""/>
+				<control progid="DecalControls.StaticText" name="lblTrafficCaption" left="8" top="122" width="80" height="16" text="Messages:"/>
+				<control progid="DecalControls.StaticText" name="lblTraffic" left="92" top="122" width="320" height="16" text=""/>
+				<control progid="DecalControls.StaticText" name="lblActionsCaption" left="8" top="140" width="80" height="16" text="Acting:"/>
+				<control progid="DecalControls.StaticText" name="lblActions" left="92" top="140" width="320" height="16" text=""/>
+				<control progid="DecalControls.StaticText" name="lblKeys" left="8" top="162" width="120" height="16" fontsize="16" fontstyle=" bold" text="Movement keys"/>
+				<control progid="DecalControls.StaticText" name="lblKeyForward" left="8" top="180" width="28" height="16" text="Fwd"/>
+				<control progid="DecalControls.Edit" name="txtKeyForward" left="36" top="180" width="36" height="16" imageportalsrc="4726" text=""/>
+				<control progid="DecalControls.StaticText" name="lblKeyBackward" left="78" top="180" width="28" height="16" text="Back"/>
+				<control progid="DecalControls.Edit" name="txtKeyBackward" left="106" top="180" width="36" height="16" imageportalsrc="4726" text=""/>
+				<control progid="DecalControls.StaticText" name="lblKeyTurnLeft" left="148" top="180" width="28" height="16" text="Left"/>
+				<control progid="DecalControls.Edit" name="txtKeyTurnLeft" left="176" top="180" width="36" height="16" imageportalsrc="4726" text=""/>
+				<control progid="DecalControls.StaticText" name="lblKeyTurnRight" left="218" top="180" width="32" height="16" text="Right"/>
+				<control progid="DecalControls.Edit" name="txtKeyTurnRight" left="250" top="180" width="36" height="16" imageportalsrc="4726" text=""/>
+				<control progid="DecalControls.PushButton" name="btnTestWalk" left="300" top="176" width="110" height="22" text="Test Walk"/>
+				<control progid="DecalControls.StaticText" name="lblTestWalk" left="148" top="162" width="264" height="16" text=""/>
+			</control>
+		</page>
+		<page label="Hotkeys">
+			<control progid="DecalControls.FixedLayout" clipped="">
+				<control progid="DecalControls.StaticText" name="lblHotkeyPlugin" left="4" top="2" width="100" height="16" fontsize="16" fontstyle=" bold" text="Plugin"/>
+				<control progid="DecalControls.StaticText" name="lblHotkeyAction" left="108" top="2" width="180" height="16" fontsize="16" fontstyle=" bold" text="Action"/>
+				<control progid="DecalControls.StaticText" name="lblHotkeyKeys" left="292" top="2" width="120" height="16" fontsize="16" fontstyle=" bold" text="Key"/>
+				<control progid="DecalControls.List" name="lstHotkeys" left="0" top="18" width="420" height="118">
+					<column progid="DecalControls.TextColumn" name="clHotkeyPlugin" fixedwidth="100"/>
+					<column progid="DecalControls.TextColumn" name="clHotkeyAction" fixedwidth="180"/>
+					<column progid="DecalControls.TextColumn" name="clHotkeyKeys" fixedwidth="120"/>
+				</control>
+				<control progid="DecalControls.Choice" name="cmbHotkey" left="4" top="142" width="220" height="20"/>
+				<control progid="DecalControls.Edit" name="txtHotkeyKeys" left="230" top="144" width="80" height="16" imageportalsrc="4726" text=""/>
+				<control progid="DecalControls.PushButton" name="btnSetHotkey" left="316" top="140" width="46" height="22" text="Set"/>
+				<control progid="DecalControls.PushButton" name="btnClearHotkey" left="366" top="140" width="50" height="22" text="Clear"/>
+				<control progid="DecalControls.StaticText" name="lblHotkeyHelp" left="4" top="168" width="412" height="32" text="Pick an action, type a key such as Ctrl+F12, and Set. A bound key is kept from the game."/>
+			</control>
+		</page>
+		<page label="About">
+			<control progid="DecalControls.FixedLayout" clipped="">
+				<control progid="DecalControls.StaticText" name="lblAbout" left="8" top="8" width="400" height="16" fontsize="16" fontstyle=" bold" text="Decal for AC:Unreal"/>
+				<control progid="DecalControls.StaticText" name="lblAboutVersion" left="8" top="28" width="400" height="16" text=""/>
+				<control progid="DecalControls.StaticText" name="lblAboutText" left="8" top="48" width="400" height="80" text="Plugins run beside the game, in the host between the client and the server, and draw their windows here. Virindi Tank is one plugin among them."/>
+				<control progid="DecalControls.StaticText" name="lblAboutFolder" left="8" top="132" width="400" height="32" text=""/>
+			</control>
+		</page>
+	</control>
+</view>

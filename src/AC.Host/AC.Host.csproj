@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AC.Host</RootNamespace>
+    <AssemblyName>AC.Host</AssemblyName>
+    <Description>Out-of-process plugin host for Asheron's Call clients: a world model decoded from the wire, a plugin contract, and the transports that feed it. The role Decal played, without injecting into the client.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Protocol\AC.Protocol.csproj" />
+    <ProjectReference Include="..\AC.Proxy\AC.Proxy.csproj" />
+    <ProjectReference Include="..\AC.Dat\AC.Dat.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AC.Host.Tests" />
+    <!-- The Virindi Tank repository's tests, which build against this repository as a git
+         submodule and set up world state the way this repository's own tests do. -->
+    <InternalsVisibleTo Include="VirindiTank.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Decal's own window, drawn like any plugin's. -->
+    <EmbeddedResource Include="Decal\DecalAgent.xml" LogicalName="AC.Host.Decal.DecalAgent.xml" />
+  </ItemGroup>
+
+</Project>

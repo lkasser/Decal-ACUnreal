@@ -1,0 +1,1 @@
+Embedded in the test assembly so that ManifestResources is tested against a real compiled assembly.

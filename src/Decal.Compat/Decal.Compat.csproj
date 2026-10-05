@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Decal.Compat</RootNamespace>
+    <AssemblyName>Decal.Compat</AssemblyName>
+    <Description>Runs Decal's .NET plugins in the AC host: finds them, loads each against the Decal.Adapter and Virindi View Service stand-ins, starts them as Decal did, and shows their windows in the overlay.</Description>
+    <!-- A plugin is loaded by path, so it carries its own dependencies - the two stand-ins -
+         beside it. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <GenerateDependencyFile>true</GenerateDependencyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj">
+      <!-- The contract comes from the host at runtime; the plugin must not ship its own copy. -->
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\AC.Dat\AC.Dat.csproj">
+      <!-- For Decal's registry of installed plugins; the host has it loaded. -->
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\Decal.Adapter\Decal.Adapter.csproj" />
+    <ProjectReference Include="..\VirindiViewService\VirindiViewService.csproj" />
+    <ProjectReference Include="..\Decal.FileService\Decal.FileService.csproj" />
+    <ProjectReference Include="..\Microsoft.DirectX\Microsoft.DirectX.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AC.Host.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- A 64-bit SQLite for Virindi's tools, which ship a 32-bit one (third_party/sqlite). -->
+    <None Include="..\..\third_party\sqlite\win-x64\sqlite3.dll" Link="native\sqlite3.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Mono.Cecil" Version="0.11.6" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,76 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- A window of its own, so Windows it is; everything it runs is plain net10.0. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType>
+    <!-- DecalAgent.exe, as Decal's own was DenAgent.exe. Not "Decal": that is the name of Decal's
+         own native Decal.dll, the name of the host's Decal window, and the prefix of the
+         Decal.Adapter family that Decal plugins bind to by name. -->
+    <AssemblyName>DecalAgent</AssemblyName>
+    <RootNamespace>Decal.Agent</RootNamespace>
+    <Product>Decal Agent</Product>
+    <Description>Decal for AC:Unreal: runs the plugin host, lists and manages its plugins, and puts the overlay into the client.</Description>
+    <Version>1.0.0</Version>
+    <ApplicationIcon>Resources\Decal.ico</ApplicationIcon>
+    <!-- Decal's own dialogs were MS Sans Serif 8, which Windows Forms draws as this. -->
+    <ApplicationDefaultFont>Microsoft Sans Serif, 8.25pt</ApplicationDefaultFont>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Host.Runtime\AC.Host.Runtime.csproj" />
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj" />
+    <!-- The injector's classes, to put the overlay into the client; its acinject.exe comes along. -->
+    <ProjectReference Include="..\AC.Injector\AC.Injector.csproj" />
+    <!-- Decal's .NET plugin runner is part of Decal, so the Agent ships it as a plugin. Built,
+         not referenced: it is loaded from plugins\ like any other. Nothing here builds or
+         references Virindi Tank; see tools\install-plugin.ps1 for that. -->
+    <ProjectReference Include="..\Decal.Compat\Decal.Compat.csproj" ReferenceOutputAssembly="false" OutputItemType="DecalCompatOutput" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Decal Agent's own icon and its plugin list's pictures, taken from DenAgent.exe. -->
+    <EmbeddedResource Include="Resources\Decal.ico" LogicalName="Decal.Agent.Decal.ico" />
+    <EmbeddedResource Include="Resources\PluginList.bmp" LogicalName="Decal.Agent.PluginList.bmp" />
+  </ItemGroup>
+
+  <!-- Lays the Decal compatibility plugin out under plugins\Decal.Compat. The files are named
+       rather than globbed because a build with -o puts every project's output in one folder,
+       where a glob would sweep up the Agent itself: Decal.Compat, the five stand-ins it hands
+       Decal plugins, and Mono.Cecil. The host supplies everything else it refers to. -->
+  <Target Name="LayOutDecalCompat" AfterTargets="Build">
+    <PropertyGroup>
+      <DecalCompatFolder>@(DecalCompatOutput->'%(RootDir)%(Directory)')</DecalCompatFolder>
+    </PropertyGroup>
+    <ItemGroup>
+      <DecalCompatFile Include="$(DecalCompatFolder)Decal.Compat.dll;$(DecalCompatFolder)Decal.Compat.deps.json;$(DecalCompatFolder)Decal.Compat.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)Decal.Adapter.dll;$(DecalCompatFolder)Decal.Adapter.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)Decal.FileService.dll;$(DecalCompatFolder)Decal.FileService.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)Decal.Interop.Core.dll;$(DecalCompatFolder)Decal.Interop.Core.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)VirindiViewService.dll;$(DecalCompatFolder)VirindiViewService.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)Microsoft.DirectX.dll;$(DecalCompatFolder)Microsoft.DirectX.pdb" />
+      <!-- Rewrites registered plugins' working copies (RegistryRewrite). -->
+      <DecalCompatFile Include="$(DecalCompatFolder)Mono.Cecil.dll" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(DecalCompatFolder)Decal.Compat.dll')" Text="Decal.Compat was built, but not to $(DecalCompatFolder)." />
+    <Copy SourceFiles="@(DecalCompatFile)" Condition="Exists('%(FullPath)')" DestinationFolder="$(OutDir)plugins\Decal.Compat" SkipUnchangedFiles="true" />
+    <!-- The 64-bit native DLLs Decal plugins are given in place of their own 32-bit ones. -->
+    <ItemGroup>
+      <DecalCompatNative Include="$(DecalCompatFolder)native\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DecalCompatNative)" DestinationFolder="$(OutDir)plugins\Decal.Compat\native" SkipUnchangedFiles="true" />
+  </Target>
+
+  <!-- A publish carries the plugin too, laid out the same way: the copies above go to the build
+       folder only, and tools\build-installers.ps1 packs the published folder whole. -->
+  <Target Name="PublishDecalCompat" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(DecalCompatFile)" Condition="Exists('%(DecalCompatFile.FullPath)')" RelativePath="plugins\Decal.Compat\%(DecalCompatFile.Filename)%(DecalCompatFile.Extension)" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="@(DecalCompatNative)" RelativePath="plugins\Decal.Compat\native\%(DecalCompatNative.Filename)%(DecalCompatNative.Extension)" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+</Project>

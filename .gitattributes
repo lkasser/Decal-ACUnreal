@@ -1,0 +1,13 @@
+# C# sources and projects are kept CRLF in the working tree, as Visual Studio writes them.
+*.cs text eol=crlf
+*.csproj text eol=crlf
+*.xml text eol=crlf
+*.sh text eol=lf
+
+# Binary files: never converted.
+*.png binary
+*.bmp binary
+*.ico binary
+*.snk binary
+*.dll binary
+*.s3db binary

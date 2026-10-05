@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>AC.Proxy.Cli</RootNamespace>
+    <AssemblyName>acproxy</AssemblyName>
+    <Description>Command-line front end for the AC proxy: relay a session with an optional capture, or replay a capture through the parser.</Description>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Proxy\AC.Proxy.csproj" />
+    <ProjectReference Include="..\AC.Protocol\AC.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

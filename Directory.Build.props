@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- Decal-era idioms the stand-ins keep on purpose (obsolete overload styles, unused
+         parameters a plugin's signature needs) must not fail the build. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <Company>Decal for AC:Unreal</Company>
+    <Copyright>Copyright (c) 2026 lkasser. MIT.</Copyright>
+  </PropertyGroup>
+</Project>

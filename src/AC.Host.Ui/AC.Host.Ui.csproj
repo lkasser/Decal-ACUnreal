@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The one project that cannot be plain net10.0: a window needs Windows. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>VirindiTankWindow</AssemblyName>
+    <RootNamespace>AC.Host.Ui</RootNamespace>
+    <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj" />
+    <ProjectReference Include="..\AC.Dat\AC.Dat.csproj" />
+    <ProjectReference Include="..\AC.Proxy\AC.Proxy.csproj" />
+  </ItemGroup>
+
+  <!-- Plugins are loaded at run time from plugins\ beside the window, exactly as achost loads
+       them, so the UI has no compile-time knowledge of any plugin. The Virindi Tank plugin
+       (a repository of its own) is installed there with its tools\install-plugin.ps1
+       -Destination, and a Starter.utl profile may be put beside the window. -->
+
+</Project>

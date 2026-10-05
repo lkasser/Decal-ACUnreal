@@ -1,0 +1,73 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>AC.Host.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- Tests against the player's own session captures, which are never committed: they skip
+         on a machine without them. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\AC.Host\AC.Host.csproj" />
+    <!-- Only so the plugin-facing control kinds can be checked against the wire's numbers. -->
+    <ProjectReference Include="..\..\src\AC.Host.Overlay\AC.Host.Overlay.csproj" />
+    <!-- The whole host as achost and the Decal Agent start it. -->
+    <ProjectReference Include="..\..\src\AC.Host.Runtime\AC.Host.Runtime.csproj" />
+    <ProjectReference Include="..\..\src\AC.Protocol\AC.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\AC.Proxy\AC.Proxy.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Deliberately incompatible plugins, so the loader's refusals can be tested
+         against real assemblies rather than mocks. -->
+    <ProjectReference Include="..\plugins\Unversioned.Plugin\Unversioned.Plugin.csproj" />
+    <ProjectReference Include="..\plugins\TooNew.Plugin\TooNew.Plugin.csproj" />
+    <!-- A well-behaved plugin, for switching on, off and reloading while the host runs. -->
+    <ProjectReference Include="..\plugins\Counting.Plugin\Counting.Plugin.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The Decal compatibility layer, and the stand-ins it hands Decal plugins. -->
+    <ProjectReference Include="..\..\src\Decal.Compat\Decal.Compat.csproj" />
+    <!-- A real Decal plugin, built but not referenced: it is copied to decal-plugins/ and
+         loaded from there as a Decal plugin folder would be, in a context of its own. -->
+    <ProjectReference Include="..\decal-plugins\AutoWireupExamplePlugin\AutoWireupExamplePlugin.csproj" ReferenceOutputAssembly="false" OutputItemType="DecalPluginFixture" />
+    <!-- A Decal plugin that goes wrong as Virindi's do here, installed apart from the folder
+         above, where tests point a stand-in for Decal's registry at it. -->
+    <ProjectReference Include="..\decal-plugins\TroubledPlugin\TroubledPlugin.csproj" ReferenceOutputAssembly="false" OutputItemType="DecalRegisteredFixture" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- To compile calls on VVS's DxTexture, some of whose overloads take a System.Drawing
+         bitmap, as the stand-in is compiled; the tests never touch a bitmap, so none is shipped
+         or loaded. -->
+    <Reference Include="System.Drawing.Common">
+      <HintPath>$(NetCoreTargetingPackRoot)\Microsoft.WindowsDesktop.App.Ref\$(BundledNETCoreAppPackageVersion)\ref\$(TargetFramework)\System.Drawing.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="CopyDecalPluginFixtures" AfterTargets="Build">
+    <Copy SourceFiles="@(DecalPluginFixture)" DestinationFolder="$(OutDir)decal-plugins\%(Filename)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(DecalRegisteredFixture)" DestinationFolder="$(OutDir)decal-registered\%(Filename)" SkipUnchangedFiles="true" />
+  </Target>
+
+  <ItemGroup>
+    <!-- Read back out of the compiled test assembly, so the manifest resource reader is
+         tested against a real assembly rather than one built by hand. -->
+    <EmbeddedResource Include="Resources\resource-probe.txt" LogicalName="AC.Host.Tests.Resources.resource-probe.txt" />
+    <!-- A Decal view with one of every control, for the Decal and VVS stand-ins' own tests. -->
+    <EmbeddedResource Include="Resources\decal-test-view.xml" LogicalName="AC.Host.Tests.Resources.decal-test-view.xml" />
+    <!-- Two captured logins (PlayerDescription game events), bytes as the server sent them. -->
+    <EmbeddedResource Include="Resources\login-full-vitals.hex" LogicalName="AC.Host.Tests.Resources.login-full-vitals.hex" />
+    <EmbeddedResource Include="Resources\login-self-buffed.hex" LogicalName="AC.Host.Tests.Resources.login-self-buffed.hex" />
+  </ItemGroup>
+
+</Project>

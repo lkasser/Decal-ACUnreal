@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Decal.Adapter</RootNamespace>
+    <AssemblyName>Decal.Adapter</AssemblyName>
+    <Description>Decal's .NET plugin API - PluginBase, CoreManager, the world and character filters, views and their control wrappers - implemented over the AC host, so plugins written for Decal run without it.</Description>
+    <!-- The identity plugins were compiled against: Decal 3.0's own version, and its public
+         key, so the shim is "Decal.Adapter, PublicKeyToken=bd1c8ce002ce221e" exactly. Public
+         signing needs only the public half, which is in every copy of Decal ever shipped; the
+         runtime does not check the signature, and nothing here claims to be Decal's build. -->
+    <AssemblyVersion>2.9.8.3</AssemblyVersion>
+    <FileVersion>2.9.8.3</FileVersion>
+    <SignAssembly>true</SignAssembly>
+    <PublicSign>true</PublicSign>
+    <AssemblyOriginatorKeyFile>DecalPublicKey.snk</AssemblyOriginatorKeyFile>
+    <!-- CS8002: the host's assemblies are not strong-named, and on .NET they need not be. -->
+    <NoWarn>$(NoWarn);CS8002</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Decal's schema of the game's messages, from Decal 3.0's own install (its files are free
+         to use), for ServerDispatch and ClientDispatch: built in, so messages are read whether
+         Decal is installed or not. -->
+    <EmbeddedResource Include="messages.xml" LogicalName="Decal.Adapter.messages.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- For PluginHost.Underlying, which plugins went through to the client hooks. -->
+    <ProjectReference Include="..\Decal.Interop.Core\Decal.Interop.Core.csproj" />
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj">
+      <!-- The host is already loaded when the shim is; it must not ship a second copy. -->
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

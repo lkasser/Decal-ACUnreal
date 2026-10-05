@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Virindi's AutoWireup example Decal plugin (MIT, from virindi_public's Examples folder),
+       its sources unchanged, built against the Decal.Adapter and Virindi View Service
+       stand-ins instead of Decal's own. It exists so the compatibility layer is tested against
+       a real Decal plugin - view XML, the MetaViewWrappers view selector, attribute wiring,
+       world events - rather than one written to suit it. -->
+  <PropertyGroup>
+    <AssemblyName>AutoWireupExamplePlugin</AssemblyName>
+    <RootNamespace>AutoWireupExamplePlugin</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- As the original project built it: with Virindi View Service referenced, so the plugin
+         takes VVS's windows when VVS is running and Decal's when it is not. -->
+    <DefineConstants>$(DefineConstants);VVS_REFERENCED</DefineConstants>
+    <!-- The plugin brings its own AssemblyInfo. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- 2011 code: its own #warning about Decal's COM interop, and nullable-era noise. -->
+    <NoWarn>$(NoWarn);CS1030;CS0618;CS0067;CS0649</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Views\MainView.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Supplied at run time by whatever loads the plugin, as Decal supplied its own. -->
+    <ProjectReference Include="..\..\..\src\Decal.Adapter\Decal.Adapter.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\..\..\src\VirindiViewService\VirindiViewService.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

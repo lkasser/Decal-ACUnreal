@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>VirindiViewService</RootNamespace>
+    <AssemblyName>VirindiViewService</AssemblyName>
+    <Description>Virindi View Service's plugin API - HudView, its controls and the Decal XML parser - over the AC host's Decal views, so plugins that chose VVS's windows over Decal's get them drawn by the host's overlay.</Description>
+    <!-- The version plugins test for before trusting VVS to be there (they want 1.0.0.37 or
+         later), and the last one released. VVS was never strong-named, so the name and
+         version are the whole of its identity. -->
+    <AssemblyVersion>1.0.0.47</AssemblyVersion>
+    <FileVersion>1.0.0.47</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Decal.Adapter\Decal.Adapter.csproj" />
+    <!-- DxTexture's transforms are Managed DirectX's matrices and vectors, as VVS's were. -->
+    <ProjectReference Include="..\Microsoft.DirectX\Microsoft.DirectX.csproj" />
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj">
+      <!-- The host is already loaded when the shim is; it must not ship a second copy. -->
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- DxTexture takes a plugin's System.Drawing bitmaps, as VVS's did, so it is compiled
+         against the Bitmap of Windows' desktop runtime - the one a Decal plugin is given - and
+         ships no copy of its own. On a host without that runtime, only the members that take a
+         bitmap are missing; everything else in the shim works without it. -->
+    <Reference Include="System.Drawing.Common">
+      <HintPath>$(NetCoreTargetingPackRoot)\Microsoft.WindowsDesktop.App.Ref\$(BundledNETCoreAppPackageVersion)\ref\$(TargetFramework)\System.Drawing.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

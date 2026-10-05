@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Decal.Filters</RootNamespace>
+    <AssemblyName>Decal.FileService</AssemblyName>
+    <Description>Decal's FileService filter - the spell and skill tables plugins read from the client's portal file - answered from the host's own reader of client_portal.dat.</Description>
+    <!-- Decal 3.0's own identity, as for Decal.Adapter: its version and its public key. -->
+    <AssemblyVersion>2.9.8.3</AssemblyVersion>
+    <FileVersion>2.9.8.3</FileVersion>
+    <SignAssembly>true</SignAssembly>
+    <PublicSign>true</PublicSign>
+    <AssemblyOriginatorKeyFile>DecalPublicKey.snk</AssemblyOriginatorKeyFile>
+    <!-- CS8002: the host's assemblies are not strong-named, and on .NET they need not be. -->
+    <NoWarn>$(NoWarn);CS8002</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Decal.Adapter\Decal.Adapter.csproj" />
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\AC.Dat\AC.Dat.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

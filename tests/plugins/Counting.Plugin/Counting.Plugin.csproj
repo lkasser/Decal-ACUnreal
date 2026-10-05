@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A well-behaved plugin but for one thing: it never lets go of the tick. Exists so
+       switching plugins on, off and reloading them can be tested against a real assembly
+       on disk, and so can the host cutting a forgetful plugin loose. -->
+  <PropertyGroup>
+    <AssemblyName>Counting.Plugin</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\AC.Host\AC.Host.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

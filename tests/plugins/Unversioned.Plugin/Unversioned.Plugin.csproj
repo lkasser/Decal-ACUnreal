@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A plugin that forgets to declare a contract version. Exists so the loader's
+       refusal can be tested against a real assembly rather than a mock. -->
+  <PropertyGroup>
+    <AssemblyName>Unversioned.Plugin</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\AC.Host\AC.Host.csproj" />
+  </ItemGroup>
+
+</Project>

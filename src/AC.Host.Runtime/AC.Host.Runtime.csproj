@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AC.Host.Runtime</RootNamespace>
+    <AssemblyName>AC.Host.Runtime</AssemblyName>
+    <Description>Runs the whole host - relay, world, plugins, the injected overlay's pipe and the control pipe - as one object, so that achost and the Decal Agent start exactly the same thing and cannot drift apart.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj" />
+    <ProjectReference Include="..\AC.Host.Overlay\AC.Host.Overlay.csproj" />
+    <ProjectReference Include="..\AC.Proxy\AC.Proxy.csproj" />
+    <ProjectReference Include="..\AC.Protocol\AC.Protocol.csproj" />
+    <ProjectReference Include="..\AC.Dat\AC.Dat.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AC.Host.Tests" />
+  </ItemGroup>
+
+</Project>

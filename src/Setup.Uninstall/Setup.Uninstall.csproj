@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <OutputType>WinExe</OutputType>
+    <!-- Uninstall.exe, in Decal Agent's folder, which Apps runs for either product. -->
+    <AssemblyName>Uninstall</AssemblyName>
+    <RootNamespace>Setup.Uninstall</RootNamespace>
+    <Product>Decal Agent</Product>
+    <AssemblyTitle>Decal Agent Uninstall</AssemblyTitle>
+    <Description>Uninstalls Decal Agent, or Virindi Tank from it, by the list of what their setups installed.</Description>
+    <Version>1.0.0</Version>
+    <ApplicationIcon>..\Decal.Agent\Resources\Decal.ico</ApplicationIcon>
+    <ApplicationManifest>..\Setup.Common\setup.manifest</ApplicationManifest>
+    <ApplicationDefaultFont>Microsoft Sans Serif, 8.25pt</ApplicationDefaultFont>
+    <ApplicationHighDpiMode>SystemAware</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+  </PropertyGroup>
+
+  <!-- Published (by tools\build-installers.ps1) into the folder the Agent is published to, for
+       the same runtime: it runs on the runtime the Agent carries, and adds only itself. -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Setup.Common\Setup.Common.csproj" />
+  </ItemGroup>
+
+</Project>

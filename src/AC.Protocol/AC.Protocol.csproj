@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AC.Protocol</RootNamespace>
+    <AssemblyName>AC.Protocol</AssemblyName>
+    <Description>Asheron's Call network framing: packet headers, optional header sections, fragments, and message reassembly. Parsing is total - malformed input is rejected, never thrown on.</Description>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="AC.Protocol.Tests" />
+  </ItemGroup>
+
+</Project>

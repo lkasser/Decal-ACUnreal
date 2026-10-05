@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>AC.Host.Overlay</RootNamespace>
+    <AssemblyName>AC.Host.Overlay</AssemblyName>
+    <Description>Feeds the injected overlay: a named pipe carrying snapshots of what to draw, and commands coming back. The wire types know nothing of the host; only OverlayMapping reads the host's windows and views, so the host itself never depends on this.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- For OverlayMapping alone: turning the host's windows and Decal views into the wire
+         types needs both vocabularies in one place, and putting that here rather than in
+         the host keeps the host free of anything about the pipe. The reference must never
+         run the other way. -->
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj" />
+  </ItemGroup>
+
+</Project>

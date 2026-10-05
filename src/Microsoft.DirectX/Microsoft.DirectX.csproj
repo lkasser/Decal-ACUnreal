@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Microsoft.DirectX</RootNamespace>
+    <AssemblyName>Microsoft.DirectX</AssemblyName>
+    <Description>The maths of Managed DirectX 1.1 - Matrix, Plane, Vector2 and Vector3 - for Decal plugins that work out their own drawing with it. Only the maths: there is no Direct3D device here to draw with.</Description>
+    <!-- The version Decal plugins were built against. Managed DirectX is strong-named with
+         Microsoft's key, which this is not: Decal.Compat hands it to a plugin by name, as it
+         does every stand-in, and .NET does not compare the key a plugin asked for with the
+         one it is given. -->
+    <AssemblyVersion>1.0.2902.0</AssemblyVersion>
+    <FileVersion>1.0.2902.0</FileVersion>
+  </PropertyGroup>
+
+</Project>

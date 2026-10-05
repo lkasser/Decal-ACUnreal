@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<view icon="7735" title="Decal Test" width="300" height="200">
+	<control progid="DecalControls.Notebook" name="nbMain">
+		<page label="Main">
+			<control progid="DecalControls.FixedLayout" clipped="">
+				<control progid="DecalControls.PushButton" name="btnGo" left="4" top="4" width="60" height="20" text="Go"/>
+				<control progid="DecalControls.Checkbox" name="chkOn" left="4" top="28" width="120" height="20" text="On"/>
+				<control progid="DecalControls.Edit" name="edtName" left="4" top="52" width="120" height="20" text=""/>
+				<control progid="DecalControls.Choice" name="cmbKind" left="4" top="76" width="120" height="20">
+					<option text="First" data="one"/>
+					<option text="Second" data="two"/>
+				</control>
+				<control progid="DecalControls.Slider" name="sldLevel" left="4" top="100" width="120" height="20" minimum="0" maximum="10"/>
+				<control progid="DecalControls.StaticText" name="lblStatus" left="130" top="4" width="160" height="16" text="idle"/>
+				<control progid="DecalControls.Progress" name="prgDone" left="130" top="24" width="160" height="16" maxvalue="100"/>
+				<control progid="DecalControls.List" name="lstThings" left="0" top="124" width="300" height="60">
+					<column progid="DecalControls.CheckColumn" fixedwidth="16"/>
+					<column progid="DecalControls.IconColumn" fixedwidth="16"/>
+					<column progid="DecalControls.TextColumn" fixedwidth="200"/>
+				</control>
+			</control>
+		</page>
+		<page label="More">
+			<control progid="DecalControls.FixedLayout" clipped=""/>
+		</page>
+	</control>
+</view>

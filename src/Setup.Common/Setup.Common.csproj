@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The wizard is a window, so Windows; the install logic beneath it is plain .NET and is
+         tested against temporary folders and a registry held in memory. -->
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>Setup.Common</RootNamespace>
+    <AssemblyName>Setup.Common</AssemblyName>
+    <Description>What Decal Agent's and Virindi Tank's setups share: the payload they carry, the install and uninstall they do, the registry and shortcuts they write, and their wizard.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Only to find Virindi Tank the way the plugin itself does, through Decal's registry,
+         which is read and never written. -->
+    <ProjectReference Include="..\AC.Dat\AC.Dat.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Decal's icon, for the wizard's header; the same one Decal Agent shows. -->
+    <EmbeddedResource Include="..\Decal.Agent\Resources\Decal.ico" Link="Resources\Decal.ico" LogicalName="Setup.Common.Decal.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Setup.Tests" />
+  </ItemGroup>
+
+</Project>

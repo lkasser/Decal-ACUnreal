@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A Decal plugin that goes wrong the ways the real Virindi plugins do under this host: it
+       looks its folder up in Decal's registry through the 64-bit view and finds nothing, reports
+       that with a message box as Virindi's did, reports a missing stand-in type in chat, and has
+       a login handler that throws. So the compatibility layer's account of why a plugin is
+       unwell is tested against a plugin that is, rather than against a description of one. -->
+  <PropertyGroup>
+    <AssemblyName>TroubledPlugin</AssemblyName>
+    <RootNamespace>TroubledPlugin</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Version>1.2.3.4</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Supplied at run time by whatever loads the plugin, as Decal supplied its own. -->
+    <ProjectReference Include="..\..\..\src\Decal.Adapter\Decal.Adapter.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

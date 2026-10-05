@@ -1,0 +1,5 @@
+# Fetched by fetch-deps.ps1 at pinned commits, not committed: large, alive, unmodified.
+third_party/
+
+# Build output.
+build/
