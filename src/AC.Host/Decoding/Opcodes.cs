@@ -295,6 +295,24 @@
         public const uint EnterPkLite = 0x028F;
         public const uint QueryMotd = 0x0255;
         public const uint RecallAllegianceHometown = 0x02AB;
+
+        // The character's own settings, as the client keeps the server told: Decal's messages.xml
+        // lays them out, and its character filter read them.
+
+        /// <summary>The options panel as a whole: CharacterOptionData, as the login describes it.</summary>
+        public const uint SetCharacterOptions = 0x01A1;
+
+        /// <summary>An object put on the shortcut bar: slot, object, and a word of spell.</summary>
+        public const uint AddShortCut = 0x019C;
+
+        /// <summary>A shortcut taken off: the slot.</summary>
+        public const uint RemoveShortCut = 0x019D;
+
+        /// <summary>A spell put on a spell bar: the spell, its place, the bar.</summary>
+        public const uint AddSpellFavorite = 0x01E3;
+
+        /// <summary>A spell taken off a spell bar: the spell, the bar.</summary>
+        public const uint RemoveSpellFavorite = 0x01E4;
     }
 
     /// <summary>Object description flags (the server's ObjectDescriptionFlag).</summary>

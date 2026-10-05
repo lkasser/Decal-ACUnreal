@@ -456,6 +456,53 @@ namespace AC.Dat
     }
 
     /// <summary>
+    /// The experience table, file <c>0x0E000018</c>: what each level, and each rank of an
+    /// attribute, vital or skill, costs. Laid out as ACE's ExperienceTable reads it - five counts,
+    /// each one less than its table's length (attributes, vitals, trained skills, specialized
+    /// skills, levels), then the tables in that order: 32-bit costs, but 64-bit totals for the
+    /// levels.
+    /// </summary>
+    public static class ExperienceTable
+    {
+        public const uint FileId = 0x0E000018;
+
+        /// <summary>
+        /// The total experience each level needs, indexed by level: level 1 needs none, and the
+        /// last entry is the highest level there is. Empty when the file cannot be read.
+        /// </summary>
+        public static IReadOnlyList<long> ParseLevels(ReadOnlySpan<byte> data)
+        {
+            DatBinaryReader reader = new DatBinaryReader(data);
+            if (!reader.TryReadUInt32(out _))       // the file's own id
+                return Array.Empty<long>();
+
+            uint[] counts = new uint[5];
+            for (int i = 0; i < counts.Length; i++)
+            {
+                if (!reader.TryReadUInt32(out uint last))
+                    return Array.Empty<long>();
+
+                counts[i] = last + 1;
+            }
+
+            // The four tables of ranks before the levels, four bytes an entry.
+            long ranks = (long)counts[0] + counts[1] + counts[2] + counts[3];
+            if (ranks * 4 + (long)counts[4] * 8 > reader.Remaining || !reader.TrySkip((int)(ranks * 4)))
+                return Array.Empty<long>();
+
+            long[] levels = new long[counts[4]];
+            for (int i = 0; i < levels.Length; i++)
+            {
+                reader.TryReadUInt32(out uint low);
+                reader.TryReadUInt32(out uint high);
+                levels[i] = (long)(((ulong)high << 32) | low);
+            }
+
+            return levels;
+        }
+    }
+
+    /// <summary>
     /// How one skill derives from attributes: the sum of one or two attributes
     /// divided by a constant.
     /// </summary>

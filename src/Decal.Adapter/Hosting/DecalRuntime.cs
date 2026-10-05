@@ -51,6 +51,10 @@ namespace Decal.Adapter.Hosting
         private uint _loggedInAs;
         private bool _loginCompleteRaised;
         private uint _lastSelection;
+        private long _lastTotalXp;
+        private long _lastUnassignedXp;
+        private readonly HashSet<uint> _knownSpells = new HashSet<uint>();
+        private bool _countingChanges;
         private MessageSchema _messages;
         private readonly HashSet<string> _messageFaultsSaid = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<(int Type, int Kind, MessageDirection Direction)> _unfitSaid = new HashSet<(int, int, MessageDirection)>();
@@ -76,6 +80,8 @@ namespace Decal.Adapter.Hosting
             _host.EnchantmentChanged += OnEnchantmentChanged;
             _host.EnchantmentRemoved += OnEnchantmentRemoved;
             _host.UseFinished += OnUseFinished;
+            _host.PortalSpaceChanged += OnPortalSpaceChanged;
+            _host.Died += OnDied;
             _host.Tick += OnTick;
             _host.MessageSeen += OnMessageSeen;
 
@@ -392,6 +398,8 @@ namespace Decal.Adapter.Hosting
             _host.EnchantmentChanged -= OnEnchantmentChanged;
             _host.EnchantmentRemoved -= OnEnchantmentRemoved;
             _host.UseFinished -= OnUseFinished;
+            _host.PortalSpaceChanged -= OnPortalSpaceChanged;
+            _host.Died -= OnDied;
             _host.Tick -= OnTick;
             _host.MessageSeen -= OnMessageSeen;
 
@@ -607,6 +615,9 @@ namespace Decal.Adapter.Hosting
 
         private void OnObjectUpdated(object sender, HostObject obj)
         {
+            if (obj.Id == _host.Character.Id)
+                CheckCharacterChanges();
+
             _known[obj.Id] = obj;
             ObjectSnapshot now = ObjectSnapshot.Of(obj);
 
@@ -674,6 +685,7 @@ namespace Decal.Adapter.Hosting
 
             _loggedInAs = 0;
             _loginCompleteRaised = false;
+            _countingChanges = false;
             Array.Clear(_lastVitals);
             _enchantments.Clear();
             Core.CharacterFilter.OnLogoff(LogoffEventType.Authorized);
@@ -701,7 +713,71 @@ namespace Decal.Adapter.Hosting
                 Core.CharacterFilter.OnChangeVital((CharFilterVitalType)(vitalId + 1), unchecked((int)current));
             }
 
+            CheckCharacterChanges();
             CheckLoginComplete();
+        }
+
+        private void OnPortalSpaceChanged(object sender, bool entering)
+            => Core.CharacterFilter.OnChangePortalMode(entering ? PortalEventType.EnterPortal : PortalEventType.ExitPortal);
+
+        private void OnDied(object sender, string message) => Core.CharacterFilter.OnDeath(message);
+
+        /// <summary>
+        /// Decal's ChangeExperience and SpellbookChange: the total and the unspent experience each
+        /// time either changes, with how much it did - the host has nothing else to say of it - and
+        /// each spell learned or forgotten. Counted from what the character had once it was in the
+        /// world and its own description had come: what the login itself says is not a change.
+        /// </summary>
+        private void CheckCharacterChanges()
+        {
+            if (!_loginCompleteRaised || !_countingChanges)
+            {
+                TakeCharacterBaseline();
+                _countingChanges = _loginCompleteRaised && Described;
+                return;
+            }
+
+            long total = Core.CharacterFilter.TotalXP;
+            if (total != _lastTotalXp)
+            {
+                long change = total - _lastTotalXp;
+                _lastTotalXp = total;
+                Core.CharacterFilter.OnChangeExperience(PlayerXPEventType.Total, (int)Math.Clamp(change, int.MinValue, int.MaxValue));
+            }
+
+            long unassigned = Core.CharacterFilter.UnassignedXP;
+            if (unassigned != _lastUnassignedXp)
+            {
+                long change = unassigned - _lastUnassignedXp;
+                _lastUnassignedXp = unassigned;
+                Core.CharacterFilter.OnChangeExperience(PlayerXPEventType.Unassigned, (int)Math.Clamp(change, int.MinValue, int.MaxValue));
+            }
+
+            IReadOnlyCollection<uint> spellbook = _host.Character.Spellbook;
+            List<uint> learned = spellbook.Where(id => !_knownSpells.Contains(id)).OrderBy(id => id).ToList();
+            List<uint> forgotten = _knownSpells.Where(id => !spellbook.Contains(id)).OrderBy(id => id).ToList();
+            foreach (uint spell in learned)
+            {
+                _knownSpells.Add(spell);
+                Core.CharacterFilter.OnSpellbookChange(AddRemoveEventType.Add, unchecked((int)spell));
+            }
+
+            foreach (uint spell in forgotten)
+            {
+                _knownSpells.Remove(spell);
+                Core.CharacterFilter.OnSpellbookChange(AddRemoveEventType.Delete, unchecked((int)spell));
+            }
+        }
+
+        /// <summary>Whether the character's own description has come: it always brings the attributes.</summary>
+        private bool Described => _host.Character.Attributes.Count > 0;
+
+        private void TakeCharacterBaseline()
+        {
+            _lastTotalXp = Core.CharacterFilter.TotalXP;
+            _lastUnassignedXp = Core.CharacterFilter.UnassignedXP;
+            _knownSpells.Clear();
+            _knownSpells.UnionWith(_host.Character.Spellbook);
         }
 
         private void OnEnchantmentChanged(object sender, Enchantment enchantment)
@@ -817,6 +893,7 @@ namespace Decal.Adapter.Hosting
 
             _loggedInAs = id;
             _loginCompleteRaised = false;
+            _countingChanges = false;
             Core.CharacterFilter.OnLogin(unchecked((int)id));
             CheckLoginComplete();
         }
@@ -830,7 +907,11 @@ namespace Decal.Adapter.Hosting
             if (_loggedInAs == 0 || _loginCompleteRaised || _host.Character.Object == null)
                 return;
 
+            // What the character has as it arrives is where Decal's change events count from - or,
+            // where its description is still to come, what that description says.
+            TakeCharacterBaseline();
             _loginCompleteRaised = true;
+            _countingChanges = Described;
             Core.CharacterFilter.OnLoginComplete();
         }
 

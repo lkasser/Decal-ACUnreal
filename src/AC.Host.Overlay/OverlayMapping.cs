@@ -25,6 +25,10 @@ namespace AC.Host.Overlay
     public static class OverlayMapping
     {
         /// <summary>A plugin's window, with its controls and, if it has one, its view.</summary>
+        /// <remarks>
+        /// A window with a view goes by the view's title, as Decal's bar labelled a plugin's switch
+        /// - "Decal Hotkey System", not the "Decal/dhs" it is routed by; one without, by its owner.
+        /// </remarks>
         public static OverlayWindow ToDto(OverlayWindowInfo window)
         {
             if (window == null)
@@ -33,6 +37,7 @@ namespace AC.Host.Overlay
             OverlayWindow dto = new OverlayWindow
             {
                 Owner = window.Owner ?? string.Empty,
+                Title = window.View?.Title ?? string.Empty,
                 Enabled = window.Enabled,
                 StartsClosed = window.StartsClosed,
                 View = ToDto(window.View),

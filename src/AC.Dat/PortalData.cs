@@ -43,6 +43,12 @@ namespace AC.Dat
         /// <summary>How maximum health (1), stamina (3) and mana (5) derive from attributes.</summary>
         public IReadOnlyDictionary<uint, SkillFormulaInfo> VitalFormulas { get; private set; } = new Dictionary<uint, SkillFormulaInfo>();
 
+        /// <summary>
+        /// The total experience each level needs, by level - <see cref="ExperienceTable"/>'s. Empty
+        /// when the archive has no table.
+        /// </summary>
+        public IReadOnlyList<long> LevelExperience { get; private set; } = Array.Empty<long>();
+
         public string Path => _dat.Path;
 
         public int FileCount => _dat.FileCount;
@@ -69,6 +75,7 @@ namespace AC.Dat
 
                 byte[] componentData = dat.Read(SpellComponentTable.FileId);
                 byte[] vitalData = dat.Read(VitalTable.FileId);
+                byte[] experienceData = dat.Read(ExperienceTable.FileId);
 
                 return new PortalData(dat, spells, skills)
                 {
@@ -78,6 +85,9 @@ namespace AC.Dat
                     VitalFormulas = vitalData != null
                         ? VitalTable.Parse(vitalData)
                         : new Dictionary<uint, SkillFormulaInfo>(),
+                    LevelExperience = experienceData != null
+                        ? ExperienceTable.ParseLevels(experienceData)
+                        : Array.Empty<long>(),
                 };
             }
             catch

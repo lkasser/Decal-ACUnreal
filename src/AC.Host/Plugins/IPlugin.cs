@@ -124,7 +124,8 @@ namespace AC.Host.Plugins
         /// caller says whose line it is, as plugins did under Decal - "[VTank] ..." - and the
         /// same rule holds as for <see cref="ShowInGame(string)"/>: never the server's or
         /// another player's words. False when the host cannot reach the client, or for an
-        /// empty line.
+        /// empty line. A line too long for one message - several hundred characters - arrives
+        /// as several, broken at spaces.
         /// </remarks>
         bool ShowInGame(string text, int chatType);
 
@@ -252,6 +253,15 @@ namespace AC.Host.Plugins
         /// Decal's messages.xml. Any other plugin wants the events above, which say what happened;
         /// these are only the bytes, the same ones the client and the server saw. Raised for
         /// every message, so a handler that does anything slow slows everything.
+        /// <para>
+        /// A session carried on from the host before - one restarted while the game stays
+        /// connected - raises it again for the messages the world was built from, in their order,
+        /// once the login's other events have been raised and before the first message relayed:
+        /// what a login brings, and what changed it since, but not chat, combat's notices or
+        /// anything else that only told of a moment, nor what the player did besides entering
+        /// the world. A plugin that built its picture of the world from these at the login builds
+        /// the same one again.
+        /// </para>
         /// </remarks>
         event EventHandler<AC.Host.Transport.GameMessageEventArgs> MessageSeen;
     }

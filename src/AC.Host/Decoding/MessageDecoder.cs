@@ -156,6 +156,59 @@ namespace AC.Host.Decoding
                     return DecodeOutcome.Applied;
                 }
 
+                // The player's own settings, which the server never says back: the options panel
+                // as a whole, laid out as the login describes it, and a shortcut or a spell put on
+                // a bar or taken off, as Decal's messages.xml lays them out.
+                case GameActions.SetCharacterOptions:
+                {
+                    if (!TryReadCharacterOptions(ref reader, out CharacterOptionData options))
+                        return DecodeOutcome.Malformed;
+
+                    world.Character.SetOptions(options);
+                    world.NotifyCharacterUpdated();
+                    return DecodeOutcome.Applied;
+                }
+
+                case GameActions.AddShortCut:
+                {
+                    if (!reader.TryReadUInt32(out uint slot) || !reader.TryReadUInt32(out uint objectId))
+                        return DecodeOutcome.Malformed;
+
+                    world.Character.SetShortcut(unchecked((int)slot), objectId);
+                    world.NotifyCharacterUpdated();
+                    return DecodeOutcome.Applied;
+                }
+
+                case GameActions.RemoveShortCut:
+                {
+                    if (!reader.TryReadUInt32(out uint slot))
+                        return DecodeOutcome.Malformed;
+
+                    world.Character.RemoveShortcut(unchecked((int)slot));
+                    world.NotifyCharacterUpdated();
+                    return DecodeOutcome.Applied;
+                }
+
+                case GameActions.AddSpellFavorite:
+                {
+                    if (!reader.TryReadUInt32(out uint spellId) || !reader.TryReadUInt32(out uint position) || !reader.TryReadUInt32(out uint bar))
+                        return DecodeOutcome.Malformed;
+
+                    world.Character.AddToSpellBar(unchecked((int)bar), unchecked((int)position), spellId);
+                    world.NotifyCharacterUpdated();
+                    return DecodeOutcome.Applied;
+                }
+
+                case GameActions.RemoveSpellFavorite:
+                {
+                    if (!reader.TryReadUInt32(out uint spellId) || !reader.TryReadUInt32(out uint bar))
+                        return DecodeOutcome.Malformed;
+
+                    world.Character.RemoveFromSpellBar(unchecked((int)bar), spellId);
+                    world.NotifyCharacterUpdated();
+                    return DecodeOutcome.Applied;
+                }
+
                 default:
                     return DecodeOutcome.Ignored;
             }
@@ -213,7 +266,7 @@ namespace AC.Host.Decoding
                     return Do(() => world.LeaveWorld("the server logged the character off"));
 
                 case Opcodes.CharacterList:
-                    return Do(() => world.LeaveWorld("the server went back to the character list"));
+                    return DecodeCharacterList(ref reader, world);
 
                 case Opcodes.AccountBoot:
                     return DecodeAccountBoot(ref reader, world);
@@ -602,10 +655,42 @@ namespace AC.Host.Decoding
 
         private static DecodeOutcome DecodeServerName(ref SpanReader reader, WorldState world)
         {
-            if (!reader.TrySkip(8)) return DecodeOutcome.Malformed; // current and max connections
+            if (!reader.TryReadInt32(out int population)) return DecodeOutcome.Malformed;
+            if (!reader.TrySkip(4)) return DecodeOutcome.Malformed; // the most there may be
             if (!reader.TryReadString(out string name)) return DecodeOutcome.Malformed;
 
-            world.SetServerName(name);
+            world.SetServerName(name, population);
+            return DecodeOutcome.Applied;
+        }
+
+        /// <summary>
+        /// The account's characters, sent at login and whenever the character leaves the world -
+        /// on its own, with a character in the world, that says it has left. As Decal's
+        /// messages.xml lays it out and ACE writes it: a word, the characters as id, name and the
+        /// time left before a deletion, a word, the slots, then the account's name - which Decal
+        /// called the zone - and two words more.
+        /// </summary>
+        private static DecodeOutcome DecodeCharacterList(ref SpanReader reader, WorldState world)
+        {
+            world.LeaveWorld("the server went back to the character list");
+
+            if (!reader.TrySkip(4) || !reader.TryReadUInt32(out uint count) || count > reader.Remaining / 8)
+                return DecodeOutcome.Malformed;
+
+            List<AccountCharacter> characters = new List<AccountCharacter>((int)count);
+            for (uint i = 0; i < count; i++)
+            {
+                if (!reader.TryReadUInt32(out uint id)) return DecodeOutcome.Malformed;
+                if (!reader.TryReadString(out string name)) return DecodeOutcome.Malformed;
+                if (!reader.TryReadUInt32(out uint deleteTimeout)) return DecodeOutcome.Malformed;
+
+                characters.Add(new AccountCharacter(id, name, deleteTimeout));
+            }
+
+            if (!reader.TrySkip(8)) return DecodeOutcome.Malformed; // a word, and the slots
+            if (!reader.TryReadString(out string account)) return DecodeOutcome.Malformed;
+
+            world.SetAccount(account, characters);
             return DecodeOutcome.Applied;
         }
 
@@ -2085,12 +2170,13 @@ namespace AC.Host.Decoding
                 }
             }
 
-            // The enchantment registry: a word of flags, then a counted list for each of
-            // multiplicative (1), additive (2) and cooldown (4) enchantments, and a single
-            // one for vitae (8). Seven captured logins read with this, holding 44 to 87
-            // enchantments between them - one with the player's own buffs among the item spells,
-            // 90 minutes long and cast up to 85 minutes before - and every family in them
-            // matched the client's spell table.
+            // The enchantment registry: a word of flags, then a counted list of multiplicative (1)
+            // and of additive (2) enchantments, a counted list of cooldowns (8), and a single
+            // enchantment for vitae (4) - in that order, as Decal's messages.xml lays it out and
+            // ACE writes it. Seven captured logins read with this, holding 44 to 87 enchantments
+            // between them - one with the player's own buffs among the item spells, 90 minutes
+            // long and cast up to 85 minutes before - and every family in them matched the
+            // client's spell table.
             List<Enchantment> enchantments = null;
             if ((vectorFlags & 0x0200) != 0)
             {
@@ -2098,13 +2184,13 @@ namespace AC.Host.Decoding
 
                 if (!reader.TryReadUInt32(out uint registry)) return DecodeOutcome.Malformed;
 
-                for (uint list = 1; list <= 4; list <<= 1)
+                foreach (uint list in new uint[] { 1, 2, 8 })
                 {
                     if ((registry & list) != 0 && !TryReadEnchantmentList(ref reader, enchantments))
                         return DecodeOutcome.Malformed;
                 }
 
-                if ((registry & 8) != 0)
+                if ((registry & 4) != 0)
                 {
                     if (!TryReadEnchantment(ref reader, out Enchantment vitae))
                         return DecodeOutcome.Malformed;
@@ -2112,16 +2198,86 @@ namespace AC.Host.Decoding
                 }
             }
 
-            // Options, shortcuts and the inventory follow; nothing here needs them yet.
             if (spellbook != null)
                 world.Character.ReplaceSpellbook(spellbook);
 
             if (enchantments != null)
                 world.ReplaceEnchantments(enchantments);
 
+            // The options, shortcuts and spell bars come next, then the inventory, which nothing
+            // here needs. What is above stands even where these cannot be read.
+            if (TryReadCharacterOptions(ref reader, out CharacterOptionData options))
+                world.Character.SetOptions(options);
+
             world.NotifyUpdated(player);
             world.NotifyCharacterUpdated();
             return DecodeOutcome.Applied;
+        }
+
+        /// <summary>
+        /// CharacterOptionData, as Decal's messages.xml lays it out and both the login's
+        /// description and the client's SetCharacterOptions carry it: a word of flags, the first
+        /// word of options, the shortcuts (flag 1) as slot, object and a word of spell each, the
+        /// eight spell bars as a count and spells each, the components to buy (8), the spellbook's
+        /// filters (0x20) and the second word of options (0x40). What follows is not needed.
+        /// </summary>
+        private static bool TryReadCharacterOptions(ref SpanReader reader, out CharacterOptionData options)
+        {
+            options = new CharacterOptionData();
+            if (!reader.TryReadUInt32(out uint flags) || !reader.TryReadUInt32(out uint first))
+                return false;
+
+            options.Options = first;
+
+            if ((flags & 0x0001) != 0)
+            {
+                if (!reader.TryReadUInt32(out uint count) || count > reader.Remaining / 12)
+                    return false;
+
+                for (uint i = 0; i < count; i++)
+                {
+                    if (!reader.TryReadUInt32(out uint slot) || !reader.TryReadUInt32(out uint objectId) || !reader.TrySkip(4))
+                        return false;
+
+                    options.Shortcuts[unchecked((int)slot)] = objectId;
+                }
+            }
+
+            for (int bar = 0; bar < CharacterState.SpellBarCount; bar++)
+            {
+                if (!reader.TryReadUInt32(out uint count) || count > reader.Remaining / 4)
+                    return false;
+
+                List<uint> spells = new List<uint>((int)count);
+                for (uint i = 0; i < count; i++)
+                {
+                    if (!reader.TryReadUInt32(out uint spellId))
+                        return false;
+
+                    spells.Add(spellId);
+                }
+
+                options.SpellBars.Add(spells);
+            }
+
+            if ((flags & 0x0008) != 0)
+            {
+                if (!reader.TryReadUInt16(out ushort components) || !reader.TrySkip(2) || !reader.TrySkip(components * 8))
+                    return false;
+            }
+
+            if ((flags & 0x0020) != 0 && !reader.TrySkip(4))
+                return false;
+
+            if ((flags & 0x0040) != 0)
+            {
+                if (!reader.TryReadUInt32(out uint second))
+                    return false;
+
+                options.Options2 = second;
+            }
+
+            return true;
         }
     }
 }

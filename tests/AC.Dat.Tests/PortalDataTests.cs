@@ -242,6 +242,45 @@ namespace AC.Dat.Tests
             Assert.False(dat.Contains(0xDEADBEEF));
         }
 
+        /// <summary>
+        /// The experience table's levels: none needed for level 1, more for every level after, and
+        /// the last the 191,226,310,247 every level-275 character has - a table read a word out of
+        /// place would end nowhere near it.
+        /// </summary>
+        [SkippableFact]
+        public void TheLevelsCostWhatTheGameSays()
+        {
+            Skip.IfNot(Available, "No client_portal.dat on this machine.");
+
+            using PortalData portal = PortalData.Open(PortalPath);
+            IReadOnlyList<long> levels = portal.LevelExperience;
+
+            Assert.Equal(276, levels.Count);
+            Assert.Equal(0, levels[1]);
+            Assert.Equal(191_226_310_247L, levels[275]);
+            for (int level = 2; level < levels.Count; level++)
+                Assert.True(levels[level] > levels[level - 1], $"level {level} costs no more than level {level - 1}");
+        }
+
+        [Fact]
+        public void TheExperienceTableIsReadAsItsCountsSay()
+        {
+            // Counts one short of each table: two attribute ranks, one vital, one trained, one
+            // specialized, three levels.
+            List<byte> data = new List<byte>();
+            void U32(uint value) => data.AddRange(BitConverter.GetBytes(value));
+            U32(ExperienceTable.FileId);
+            foreach (uint last in new uint[] { 1, 0, 0, 0, 2 })
+                U32(last);
+            foreach (uint rank in new uint[] { 0, 10, 0, 0, 0 })
+                U32(rank);
+            foreach (long level in new long[] { 0, 0, 5_000_000_000 })
+                data.AddRange(BitConverter.GetBytes(level));
+
+            Assert.Equal(new long[] { 0, 0, 5_000_000_000 }, ExperienceTable.ParseLevels(data.ToArray()));
+            Assert.Empty(ExperienceTable.ParseLevels(data.Take(30).ToArray()));
+        }
+
         [Fact]
         public void OpeningSomethingThatIsNotADatIsRejected()
         {

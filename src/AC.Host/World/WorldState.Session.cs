@@ -171,6 +171,8 @@ namespace AC.Host.World
         {
             LeaveWorld(reason);
             ServerName = null;
+            ServerPopulation = 0;
+            SetAccount(null, null);
         }
 
         /// <summary>The character has died. The message is the server's, as the chat window shows it.</summary>

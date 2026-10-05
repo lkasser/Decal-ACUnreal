@@ -66,6 +66,9 @@ namespace AC.Host.Tests
             public void FromServer(AcMessage message)
                 => MessageReceived?.Invoke(this, new GameMessageEventArgs(PacketDirection.Inbound, message));
 
+            public void FromClient(WireWriter message)
+                => MessageReceived?.Invoke(this, new GameMessageEventArgs(PacketDirection.Outbound, message.ToMessage()));
+
             public void Closes() => SessionEnded?.Invoke(this, SessionEnd.ClientClosed);
 
             public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -214,6 +217,7 @@ namespace AC.Host.Tests
             decal.Core.CharacterFilter.Login += (_, e) => decalHeard.Add($"login {e.Id:X8}");
             decal.Core.CharacterFilter.LoginComplete += (_, _) => decalHeard.Add("complete");
             decal.Core.WorldFilter.CreateObject += (_, e) => decalHeard.Add($"created {e.New.Id:X8}");
+            decal.Core.EchoFilter.ServerDispatch += (_, e) => decalHeard.Add($"dispatch {e.Message.Type:X4}");
 
             host.OfferHandover(handover);
             await host.StartAsync();
@@ -230,7 +234,20 @@ namespace AC.Host.Tests
 
             // The server, then the character - named before it is described, as at a login - then
             // the character's own object, what it carries and wears, what is around it; its
-            // enchantments; and the character as a whole. Then the session goes on.
+            // enchantments; the messages the world was built from, as a login brings them, but for
+            // the server's word of welcome; and the character as a whole. Then the session goes on.
+            string[] builtFrom =
+            {
+                $"message {Opcodes.ServerName:X4}",
+                $"message {Opcodes.PlayerCreate:X4}",
+                $"message {Opcodes.ObjectCreate:X4}",
+                $"message {Opcodes.GameEvent:X4}",
+                $"message {Opcodes.ObjectCreate:X4}",
+                $"message {Opcodes.ObjectCreate:X4}",
+                $"message {Opcodes.ObjectCreate:X4}",
+                $"message {Opcodes.ObjectCreate:X4}",
+                $"message {Opcodes.UpdatePosition:X4}",
+            };
             List<string> expected = new List<string>
             {
                 "server Example Server",
@@ -242,18 +259,25 @@ namespace AC.Host.Tests
                 $"created {Drudge:X8}",
             };
             expected.AddRange(Enumerable.Repeat("enchantment", enchantments));
+            expected.AddRange(builtFrom);
             expected.Add("character");
             expected.Add($"updated {Drudge:X8}");
             expected.Add($"message {Opcodes.UpdatePosition:X4}");
             Assert.Equal(expected, heard);
 
-            // Nothing that happened before is told again: no chat, no message.
+            // Nothing that happened before is told again as happening now: no chat.
             Assert.DoesNotContain(heard, h => h.StartsWith("chat", StringComparison.Ordinal));
+            Assert.DoesNotContain($"message {Opcodes.ServerMessage:X4}", heard);
 
-            // Decal's plugins hear a login: Login, every object, then LoginComplete once all are described.
+            // Decal's plugins hear a login: Login, every object, the login's messages through their
+            // ServerDispatch, then LoginComplete once all are described and heard.
             Assert.Equal($"login {Player:X8}", decalHeard.First());
-            Assert.Equal("complete", decalHeard.Last());
             Assert.Equal(5, decalHeard.Count(h => h.StartsWith("created", StringComparison.Ordinal)));
+            int complete = decalHeard.IndexOf("complete");
+            Assert.Equal(
+                builtFrom.Select(m => m.Replace("message ", "dispatch ", StringComparison.Ordinal)),
+                decalHeard.Take(complete).Where(h => h.StartsWith("dispatch", StringComparison.Ordinal)));
+            Assert.Equal(new[] { "complete", $"dispatch {Opcodes.UpdatePosition:X4}" }, decalHeard.Skip(complete));
 
             // The world is the one the host before had, and goes on.
             Assert.Equal("Example Server", host.World.ServerName);
@@ -263,12 +287,118 @@ namespace AC.Host.Tests
             Assert.Equal(12f, host.World.Get(Drudge).Location.Value.X);
             Assert.NotEmpty(host.Character.Spellbook);
             Assert.Equal(handover.WrittenAt, host.CarriedOnFrom);
+
+            // Decal's character filter answers from that world: Reporter's experience is the character's.
+            Assert.Equal(191_226_310_247L, decal.Core.CharacterFilter.TotalXP);
+            Assert.Equal("Example Server", decal.Core.CharacterFilter.Server);
+            Assert.Equal(1, decal.Core.CharacterFilter.ServerPopulation);
             Assert.False(host.JoinedMidSession);
 
             // Acting as the player left it, and the log saying what happened.
             Assert.True(host.ActionsAllowed);
             lock (log.Lines)
                 Assert.Contains(log.Lines, l => l.StartsWith("INFO Carried on the session", StringComparison.Ordinal) && l.Contains("Testchar I in the world"));
+        }
+
+        /// <summary>
+        /// Keeps its own track of the world from the messages alone, as Virindi Global Inventory,
+        /// Item Tool and Virindi HUDs do: whose character it is, every object created and not
+        /// since deleted, what the client sent - its word that it is in, above all - and what was
+        /// said to it.
+        /// </summary>
+        private sealed class MessageTracker
+        {
+            public MessageTracker(DecalRuntime decal)
+            {
+                decal.Core.EchoFilter.ServerDispatch += (_, e) =>
+                {
+                    switch (e.Message.Type)
+                    {
+                        case 0xF745:
+                            Known.Add(e.Message.Value<int>("object"));
+                            break;
+                        case 0xF747:
+                            Known.Remove(e.Message.Value<int>("object"));
+                            break;
+                        case 0xF7E0:
+                            Said.Add(e.Message.Value<string>("text"));
+                            break;
+                        case 0xF7B0 when e.Message.Value<int>("event") == 0x0013:
+                            Character = e.Message.Value<int>("character");
+                            break;
+                        case 0xF7B0 when e.Message.Value<int>("event") == 0x02BD:
+                            Said.Add(e.Message.Value<string>("text"));
+                            break;
+                    }
+                };
+                decal.Core.EchoFilter.ClientDispatch += (_, e) =>
+                {
+                    if (e.Message.Type != 0xF7B1)
+                        return;
+
+                    Sent.Add(e.Message.Value<int>("action"));
+                };
+            }
+
+            public HashSet<int> Known { get; } = new HashSet<int>();
+
+            public int Character { get; private set; }
+
+            /// <summary>The actions the client sent, by number.</summary>
+            public List<int> Sent { get; } = new List<int>();
+
+            public List<string> Said { get; } = new List<string>();
+        }
+
+        /// <summary>
+        /// A Decal plugin that keeps its own track of the world from the messages finds, after a
+        /// host restart, what it had found at the login: its character, every object still there
+        /// and none since deleted, and the client's word that it was in - but nothing said is said
+        /// to it twice, not the server's welcome, a tell, or what the player said.
+        /// </summary>
+        [Fact]
+        public async Task ADecalPluginTrackingTheMessagesFindsWhatItFoundAtTheLoginWhenTheSessionIsCarriedOn()
+        {
+            const uint Wanderer = 0x80000302;
+
+            RelayStandIn first = new RelayStandIn();
+            HandoverSnapshot handover;
+            MessageTracker atLogin;
+            await using (GameHost before = new GameHost(first, new ListLog(), dataRoot: NewRoot()))
+            {
+                using DecalRuntime decal = new DecalRuntime(before);
+                atLogin = new MessageTracker(decal);
+                await before.StartAsync();
+
+                first.Starts(SessionStart.Login);
+                foreach (AcMessage message in Login())
+                    first.FromServer(message);
+                first.FromClient(new WireWriter(Opcodes.GameAction).U32(1).U32(GameActions.LoginComplete));
+                first.FromServer(WireWriter.ObjectCreate(Wanderer, "Drudge Wanderer", 941, ItemTypes.Creature, 0));
+                first.FromServer(WireWriter.GameEvent(Player, GameEvents.Tell).String16L("psst").String16L("Alice").U32(0x50000003).U32(Player).U32(3).U32(0));
+                first.FromClient(new WireWriter(Opcodes.GameAction).U32(2).U32(GameActions.Talk).String16L("hello"));
+                first.FromServer(new WireWriter(Opcodes.ObjectDelete).U32(Wanderer).U16(1));
+
+                handover = ThroughBytes(await OnGameThreadAsync(before, () => before.CreateHandover(DateTimeOffset.UtcNow)));
+            }
+
+            Assert.Equal(new[] { "Welcome to Asheron's Call", "psst" }, atLogin.Said);
+            Assert.Equal(new[] { (int)GameActions.LoginComplete, (int)GameActions.Talk }, atLogin.Sent);
+
+            RelayStandIn next = new RelayStandIn();
+            await using GameHost host = new GameHost(next, new ListLog(), dataRoot: NewRoot());
+            using DecalRuntime carriedOn = new DecalRuntime(host);
+            MessageTracker afterRestart = new MessageTracker(carriedOn);
+            host.OfferHandover(handover);
+            await host.StartAsync();
+            next.Starts(SessionStart.UnderWay);
+            await DrainAsync(host);
+
+            Assert.Equal(unchecked((int)Player), afterRestart.Character);
+            Assert.Equal(atLogin.Known.OrderBy(id => id), afterRestart.Known.OrderBy(id => id));
+            Assert.DoesNotContain(unchecked((int)Wanderer), afterRestart.Known);
+            Assert.Equal(new[] { (int)GameActions.LoginComplete }, afterRestart.Sent);
+            Assert.Empty(afterRestart.Said);
         }
 
         /// <summary>

@@ -77,8 +77,15 @@ namespace AC.Host.Plugins
         /// IHost like 3; and IHost.ShowInGame(text, chatType), a line shown exactly as given in
         /// a chat type the plugin names - its own prefix, its own colour, as Decal's AddChatText
         /// - where ShowInGame(text) is the host's own line, now "[Decal] " rather than "[VT] ".
+        ///
+        /// 11: adds what Decal's character filter answers and the host had not kept - on
+        /// ICharacterView the CharacterOptions and CharacterOptions2, the Shortcuts and the
+        /// SpellBars; on IWorldView the ServerPopulation, AccountName and AccountCharacters; and
+        /// IGameData.GetLevelExperience, the client's experience table, which has a default so
+        /// another IGameData needs nothing. A session carried on now raises MessageSeen again for
+        /// the messages its world was built from, before the first one relayed.
         /// </remarks>
-        public const int Version = 10;
+        public const int Version = 11;
 
         /// <summary>
         /// The oldest contract this host will still load a plugin for.

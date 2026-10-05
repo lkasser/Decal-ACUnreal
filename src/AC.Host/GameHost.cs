@@ -310,6 +310,12 @@ namespace AC.Host
             => !string.IsNullOrEmpty(text) && ShowInGame(OwnPrefix + text, OwnChatType);
 
         /// <summary>Puts a line in the game's chat window as given, in chat type <paramref name="chatType"/>.</summary>
+        /// <remarks>
+        /// A line longer than <see cref="LongestLineShown"/> goes as several, broken at the last
+        /// space that keeps each short enough - or, with none, where it has to be: the relay slips
+        /// a message into the server's stream only whole, in one fragment, and one that needs more
+        /// would never arrive.
+        /// </remarks>
         public bool ShowInGame(string text, int chatType)
         {
             if (string.IsNullOrEmpty(text) || !_transport.CanShowInGame)
@@ -317,14 +323,18 @@ namespace AC.Host
 
             try
             {
-                // A ServerMessage is text and a chat type, which the client draws the line in
-                // the colour of - Decal's AddChatText colour, the same numbers.
-                AC.Host.Actions.PayloadWriter payload = new AC.Host.Actions.PayloadWriter();
-                payload.String(text);
-                payload.UInt32(unchecked((uint)chatType));
+                foreach (string line in LinesToShow(text))
+                {
+                    // A ServerMessage is text and a chat type, which the client draws the line in
+                    // the colour of - Decal's AddChatText colour, the same numbers.
+                    AC.Host.Actions.PayloadWriter payload = new AC.Host.Actions.PayloadWriter();
+                    payload.String(line);
+                    payload.UInt32(unchecked((uint)chatType));
 
-                _ = _transport.ShowInGameAsync(AcMessage.Create(Opcodes.ServerMessage, payload.ToArray()));
-                Statistics.ShownInGame++;
+                    _ = _transport.ShowInGameAsync(AcMessage.Create(Opcodes.ServerMessage, payload.ToArray()));
+                    Statistics.ShownInGame++;
+                }
+
                 return true;
             }
             catch (Exception ex)
@@ -333,6 +343,40 @@ namespace AC.Host
                 _log.Error("Could not show a line in the game.", ex);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// The longest line one ServerMessage can carry and still fit one fragment, which is all
+        /// the relay will slip into the server's stream: 448 bytes, less the opcode, the text's
+        /// length and the chat type. The client's text is a byte a character.
+        /// </summary>
+        public const int LongestLineShown = 438;
+
+        /// <summary>
+        /// <paramref name="text"/> as lines of at most <see cref="LongestLineShown"/> characters,
+        /// each broken at the last space that fits - the space itself dropped - or, where there is
+        /// none, at the limit.
+        /// </summary>
+        internal static IEnumerable<string> LinesToShow(string text)
+        {
+            while (text.Length > LongestLineShown)
+            {
+                int space = text.LastIndexOf(' ', LongestLineShown);
+                if (space > 0)
+                {
+                    yield return text.Substring(0, space);
+                    text = text.Substring(space + 1);
+                    continue;
+                }
+
+                // Never between the two halves of a character outside the basic plane.
+                int cut = char.IsHighSurrogate(text[LongestLineShown - 1]) ? LongestLineShown - 1 : LongestLineShown;
+                yield return text.Substring(0, cut);
+                text = text.Substring(cut);
+            }
+
+            if (text.Length > 0)
+                yield return text;
         }
 
         /// <summary>What the host's own lines begin with.</summary>

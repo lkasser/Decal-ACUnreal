@@ -584,6 +584,96 @@ namespace AC.Host.Tests
         }
 
         /// <summary>
+        /// A VVS dropdown's current entry follows VVS's rules, which plugins rely on: the first
+        /// entry added becomes current - so Virindi Global Inventory's object class filter, filled
+        /// in code and never chosen, reads as its first entry when Search looks it up - and the
+        /// number then stays put as entries come and go, until the one it names is deleted. Only
+        /// the player's choice raises Change.
+        /// </summary>
+        [Fact]
+        public void AVirindiViewServiceDropdownsCurrentEntryFollowsVvsRules()
+        {
+            MacroTestHost host = new MacroTestHost();
+            using DecalRuntime runtime = new DecalRuntime(host);
+            VirindiViewService.HudView view = new VirindiViewService.HudView("Combo", 300, 200, new VirindiViewService.ACImage(0x1234));
+            VirindiViewService.Controls.HudFixedLayout page = new VirindiViewService.Controls.HudFixedLayout();
+            view.Controls.HeadControl = page;
+
+            VirindiViewService.Controls.HudCombo combo = new VirindiViewService.Controls.HudCombo(view.Controls);
+            int changes = 0;
+            combo.Change += (_, _) => changes++;
+            string Shown() => ((VirindiViewService.Controls.HudStaticText)combo[combo.Current])?.Text;
+
+            // Empty: VVS's number started at 0, with nothing behind it, and refuses one with no entry.
+            Assert.Equal(0, combo.Current);
+            Assert.Null(combo[0]);
+            combo.Current = 3;
+            Assert.Equal(0, combo.Current);
+
+            // The first entry added is current, before the dropdown is in the window and after.
+            combo.AddItem("0: Any", null);
+            Assert.Equal(0, combo.Current);
+            page.AddControl(combo, new System.Drawing.Rectangle(4, 4, 100, 20));
+            DecalView window = Assert.Single(runtime.Views).View;
+            Choice drawn = Assert.Single(window.Controls.OfType<Choice>());
+            Assert.Equal(0, drawn.Selected);
+            combo.AddItem("1: Armor", null);
+            combo.AddItem("2: Weapon", null);
+            Assert.Equal("0: Any", Shown());
+
+            // The number stays put, whatever goes in before it or comes out ahead of it.
+            combo.Current = 2;
+            combo.InsertItem(0, "None", null);
+            Assert.Equal(2, combo.Current);
+            Assert.Equal("1: Armor", Shown());
+            Assert.Equal(2, drawn.Selected);
+            combo.DeleteItem(0);
+            Assert.Equal("2: Weapon", Shown());
+
+            // Deleting the current entry leaves none; a number with no entry throws, as VVS's did.
+            combo.DeleteItem(2);
+            Assert.Equal(-1, combo.Current);
+            Assert.Equal(-1, drawn.Selected);
+            Assert.Throws<ArgumentException>(() => combo.DeleteItem(5));
+
+            // Cleared one at a time from the first, so a current entry past the first leaves its
+            // number behind; the next first entry is current again.
+            combo.Current = 1;
+            combo.Clear();
+            Assert.Equal(0, combo.Count);
+            Assert.Equal(1, combo.Current);
+            combo.AddItem("Again", null);
+            Assert.Equal(0, combo.Current);
+
+            // Setting an entry puts one in there, rather than replacing it.
+            combo[0] = new VirindiViewService.Controls.HudStaticText { Text = "Before" };
+            Assert.Equal(new[] { "Before", "Again" }, drawn.Options.Select(o => o.Text));
+
+            // None of that was the player's doing; this is.
+            Assert.Equal(0, changes);
+            Assert.True(window.Apply(new OverlayCommand(ViewVerbs.Set, "1", controlId: drawn.Name)));
+            Assert.Equal(1, changes);
+            Assert.Equal(1, combo.Current);
+        }
+
+        /// <summary>A VVS dropdown from a view's XML starts on its first option, as VVS added them one by one.</summary>
+        [Fact]
+        public void AVirindiViewServiceDropdownFromXmlStartsOnItsFirstOption()
+        {
+            MacroTestHost host = new MacroTestHost();
+            using DecalRuntime runtime = new DecalRuntime(host);
+
+            VirindiViewService.XMLParsers.Decal3XMLParser parser = new VirindiViewService.XMLParsers.Decal3XMLParser();
+            parser.ParseFromResource("AC.Host.Tests.Resources.decal-test-view.xml", out VirindiViewService.ViewProperties properties, out VirindiViewService.ControlGroup group);
+            VirindiViewService.HudView view = new VirindiViewService.HudView(properties, group);
+
+            VirindiViewService.Controls.HudCombo kind = (VirindiViewService.Controls.HudCombo)view["cmbKind"];
+            Assert.Equal(0, kind.Current);
+            Assert.Equal(0, Assert.Single(runtime.Views).View.Get<Choice>("cmbKind").Selected);
+            view.Dispose();
+        }
+
+        /// <summary>
         /// The VVS-edition Decal plugins installed here, run from a copy - installed plugins
         /// are only ever read. Passes without checking anything where none is installed.
         /// </summary>

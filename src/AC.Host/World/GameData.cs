@@ -59,6 +59,13 @@ namespace AC.Host.World
 
         /// <summary>A spell component - a scarab, a herb, a taper - by the id spells list it under, or null.</summary>
         SpellComponentInfo GetComponent(uint componentId);
+
+        /// <summary>
+        /// The total experience a character needs to have reached <paramref name="level"/>, from
+        /// the client's experience table; null for a level past the table's last, or without the
+        /// client's data.
+        /// </summary>
+        long? GetLevelExperience(int level) => null;
     }
 
     /// <summary>Answers nothing, for a host running without the client's files.</summary>
@@ -96,6 +103,8 @@ namespace AC.Host.World
         public SpellInfo FindSpell(string name) => null;
 
         public SpellComponentInfo GetComponent(uint componentId) => null;
+
+        public long? GetLevelExperience(int level) => null;
     }
 
     /// <summary>Client data read from <c>client_portal.dat</c>.</summary>
@@ -162,6 +171,9 @@ namespace AC.Host.World
             => name != null && Index.Names.TryGetValue(name.Trim(), out SpellInfo spell) ? spell : null;
 
         public SpellComponentInfo GetComponent(uint componentId) => _portal?.GetComponent(componentId);
+
+        public long? GetLevelExperience(int level)
+            => _portal != null && level >= 1 && level < _portal.LevelExperience.Count ? _portal.LevelExperience[level] : null;
 
         /// <summary>The families and names, indexed the first time anything asks: six thousand spells, looked up often.</summary>
         private SpellIndex Index => _index ??= new SpellIndex(_portal);

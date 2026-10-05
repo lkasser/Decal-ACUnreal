@@ -81,7 +81,7 @@ dotnet build Decal-ACUnreal.slnx
 dotnet test Decal-ACUnreal.slnx
 ```
 
-About 820 tests: AC.Protocol 58, AC.Proxy 72, AC.Dat 29, AC.Overlay 58, Setup 63 and AC.Host 540.
+About 840 tests: AC.Protocol 58, AC.Proxy 72, AC.Dat 31, AC.Overlay 58, Setup 63 and AC.Host 555.
 Some read files that are never committed and skip cleanly without them: the AC.Dat tests that
 read a real `client_portal.dat` (they look in `C:\ACE\Dats` and the usual Turbine folders), and
 the AC.Host tests that replay session captures (`*.acap`), which hold account names and so are

@@ -414,10 +414,22 @@ namespace VirindiViewService.Controls
     }
 
     /// <summary>A dropdown: DecalControls.Choice.</summary>
+    /// <remarks>
+    /// <para>
+    /// Which entry is current is kept here, by VVS's rules rather than the host dropdown's, since
+    /// plugins were written against VVS's. The first entry added to an empty dropdown becomes
+    /// current, so a dropdown filled in code shows - and reads as - its first entry without the
+    /// plugin ever choosing it. Adding or inserting more leaves the number alone, even where an
+    /// entry goes in before the current one; deleting the current entry leaves none current, and
+    /// deleting another leaves the number alone. Current is 0 until it has been anything else, as
+    /// VVS's field started, and setting it to a number with no entry behind it does nothing.
+    /// </para>
+    /// <para>Change is raised only for the player's choice, never for the plugin's own changes.</para>
+    /// </remarks>
     public class HudCombo : HudControl, IDisposable
     {
         private readonly List<string> _items = new List<string>();
-        private int _current = -1;
+        private int _current;
 
         public HudCombo(ControlGroup ic)
         {
@@ -429,21 +441,33 @@ namespace VirindiViewService.Controls
 
         public int Current
         {
-            get => Choice?.Selected ?? _current;
+            get => _current;
             set
             {
-                if (Choice != null)
-                    Choice.Selected = value;
-                else
-                    _current = value;
+                if (_current == value || value < 0 || value >= Count)
+                    return;
+
+                _current = value;
+                ShowCurrent();
             }
         }
 
-        /// <summary>An entry, as a label whose text can be read and changed.</summary>
+        /// <summary>An entry, as a label whose text can be read and changed; null for a number with no entry.</summary>
+        /// <remarks>Setting one inserts it there, as VVS's did, rather than replacing what is there.</remarks>
         public HudControl this[int i]
         {
-            get => Choice != null ? HudStaticText.ForOption(Choice, i) : new HudStaticText { Text = _items[i] };
-            set => DecalRuntime.Current?.NoteUnsupported("HudCombo entries other than text");
+            get
+            {
+                if (i < 0 || i >= Count)
+                    return null;
+
+                return Choice != null ? HudStaticText.ForOption(Choice, i) : new HudStaticText { Text = _items[i] };
+            }
+            set
+            {
+                if (i >= 0 && i < Count)
+                    InsertItem(i, value, null);
+            }
         }
 
         /// <summary>The player chose an entry.</summary>
@@ -455,6 +479,11 @@ namespace VirindiViewService.Controls
                 Choice.Add(s, tag as string);
             else
                 _items.Add(s ?? string.Empty);
+
+            if (Count == 1)
+                _current = 0;
+
+            ShowCurrent();
         }
 
         public void AddItem(HudControl ctrl, object tag) => AddItem((ctrl as HudStaticText)?.Text ?? string.Empty, tag);
@@ -465,24 +494,40 @@ namespace VirindiViewService.Controls
                 Choice.Insert(index, s, tag as string);
             else
                 _items.Insert(index, s ?? string.Empty);
+
+            if (Count == 1)
+                _current = 0;
+
+            ShowCurrent();
         }
 
         public void InsertItem(int index, HudControl ctrl, object tag) => InsertItem(index, (ctrl as HudStaticText)?.Text ?? string.Empty, tag);
 
+        /// <summary>Removes an entry. Throws for a number with no entry behind it, as VVS's did.</summary>
         public void DeleteItem(int ind)
         {
+            if (ind < 0 || ind >= Count)
+                throw new ArgumentException();
+
             if (Choice != null)
                 Choice.RemoveAt(ind);
             else
                 _items.RemoveAt(ind);
+
+            if (_current == ind)
+                _current = -1;
+
+            ShowCurrent();
         }
 
+        /// <summary>
+        /// Removes every entry, one at a time from the first, as VVS's did - so a current entry
+        /// other than the first leaves its number behind.
+        /// </summary>
         public void Clear()
         {
-            if (Choice != null)
-                Choice.Clear();
-            else
-                _items.Clear();
+            while (Count > 0)
+                DeleteItem(0);
         }
 
         internal override ViewControl CreateHostControl(DecalView view, FixedLayout parent, string name, Rectangle rect)
@@ -490,8 +535,12 @@ namespace VirindiViewService.Controls
 
         private protected override void OnAttached()
         {
-            if (Choice != null)
-                Choice.Changed += OnChanged;
+            if (Choice == null)
+                return;
+
+            // A dropdown from a view's XML: VVS added its options one by one, the first made current.
+            Choice.Changed += OnChanged;
+            ShowCurrent();
         }
 
         private protected override void OnDetaching()
@@ -506,13 +555,22 @@ namespace VirindiViewService.Controls
             foreach (string item in _items)
                 Choice.Add(item);
 
-            if (_current >= 0 && _current < Choice.Count)
-                Choice.Selected = _current;
-
             _items.Clear();
+            ShowCurrent();
         }
 
-        private void OnChanged(object sender, ChoiceChangedEventArgs e) => Change?.Invoke(this, EventArgs.Empty);
+        /// <summary>Has the host dropdown show the current entry, or none where there is no entry behind the number.</summary>
+        private void ShowCurrent()
+        {
+            if (Choice != null)
+                Choice.Selected = _current >= 0 && _current < Choice.Count ? _current : -1;
+        }
+
+        private void OnChanged(object sender, ChoiceChangedEventArgs e)
+        {
+            _current = e.Selected;
+            Change?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>A list of rows under columns: DecalControls.List.</summary>

@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 
 using AC.Host.Decoding;
 
@@ -184,6 +185,32 @@ namespace AC.Host.World
         /// null; <see cref="IFellowshipView.IsMember"/> says whether there is one.
         /// </summary>
         IFellowshipView Fellowship { get; }
+
+        /// <summary>
+        /// The character's first word of options - the game's CharacterOptions1, the boxes of its
+        /// options panel - as the login described them and the client has set them since. 0
+        /// before the login says.
+        /// </summary>
+        uint CharacterOptions { get; }
+
+        /// <summary>
+        /// The second word of options, CharacterOptions2: fast missiles (0x10000), the chat rooms
+        /// heard, showing the helm and the rest. 0 before the login says, or where it does not.
+        /// </summary>
+        uint CharacterOptions2 { get; }
+
+        /// <summary>
+        /// The objects on the shortcut bar, by slot from 0, as the login described them and the
+        /// client has changed them since. A slot with nothing on it is not there.
+        /// </summary>
+        IReadOnlyDictionary<int, uint> Shortcuts { get; }
+
+        /// <summary>
+        /// The spells on each of the eight spell bars, in their order on the bar: the login's,
+        /// kept current as the client adds and takes them away. Eight lists, empty before the
+        /// login says.
+        /// </summary>
+        IReadOnlyList<IReadOnlyList<uint>> SpellBars { get; }
     }
 
     public sealed class CharacterState : ICharacterView
@@ -315,6 +342,70 @@ namespace AC.Host.World
         /// <summary>The fellowship, for the decoder to change.</summary>
         internal FellowshipState FellowshipData { get; } = new FellowshipState();
 
+        /// <summary>How many spell bars the game has.</summary>
+        public const int SpellBarCount = 8;
+
+        public uint CharacterOptions { get; internal set; }
+
+        public uint CharacterOptions2 { get; internal set; }
+
+        public IReadOnlyDictionary<int, uint> Shortcuts => _shortcuts;
+
+        private readonly Dictionary<int, uint> _shortcuts = new Dictionary<int, uint>();
+
+        public IReadOnlyList<IReadOnlyList<uint>> SpellBars => _spellBars;
+
+        private readonly List<uint>[] _spellBars = NewSpellBars();
+
+        private static List<uint>[] NewSpellBars()
+        {
+            List<uint>[] bars = new List<uint>[SpellBarCount];
+            for (int i = 0; i < bars.Length; i++)
+                bars[i] = new List<uint>();
+            return bars;
+        }
+
+        /// <summary>
+        /// Takes the options, shortcuts and spell bars a login or the client's own options message
+        /// gave. The second word of options only where it was given.
+        /// </summary>
+        internal void SetOptions(CharacterOptionData options)
+        {
+            CharacterOptions = options.Options;
+            if (options.Options2.HasValue)
+                CharacterOptions2 = options.Options2.Value;
+
+            _shortcuts.Clear();
+            foreach (KeyValuePair<int, uint> shortcut in options.Shortcuts)
+                _shortcuts[shortcut.Key] = shortcut.Value;
+
+            for (int i = 0; i < _spellBars.Length; i++)
+            {
+                _spellBars[i].Clear();
+                if (i < options.SpellBars.Count)
+                    _spellBars[i].AddRange(options.SpellBars[i]);
+            }
+        }
+
+        internal void SetShortcut(int slot, uint objectId) => _shortcuts[slot] = objectId;
+
+        internal bool RemoveShortcut(int slot) => _shortcuts.Remove(slot);
+
+        /// <summary>Puts a spell on a bar at a place, as the client's AddSpellFavorite does: taken from wherever it was on that bar first.</summary>
+        internal bool AddToSpellBar(int bar, int position, uint spellId)
+        {
+            if (bar < 0 || bar >= _spellBars.Length)
+                return false;
+
+            List<uint> spells = _spellBars[bar];
+            spells.Remove(spellId);
+            spells.Insert(Math.Clamp(position, 0, spells.Count), spellId);
+            return true;
+        }
+
+        internal bool RemoveFromSpellBar(int bar, uint spellId)
+            => bar >= 0 && bar < _spellBars.Length && _spellBars[bar].Remove(spellId);
+
         /// <summary>
         /// Forgets the character: it has left the world, and the next one in may be another. Kept
         /// in place rather than replaced, since plugins hold on to it. The highest action sequence
@@ -339,6 +430,27 @@ namespace AC.Host.World
             LastCastSpellId = 0;
             FellowshipData.Clear();
             FellowshipData.PanelOpen = false;
+            CharacterOptions = 0;
+            CharacterOptions2 = 0;
+            _shortcuts.Clear();
+            foreach (List<uint> bar in _spellBars)
+                bar.Clear();
         }
+    }
+
+    /// <summary>
+    /// The options, shortcuts and spell bars, as the login's description and the client's own
+    /// SetCharacterOptions both carry them.
+    /// </summary>
+    internal sealed class CharacterOptionData
+    {
+        public uint Options { get; set; }
+
+        /// <summary>Null where the message did not carry the second word.</summary>
+        public uint? Options2 { get; set; }
+
+        public Dictionary<int, uint> Shortcuts { get; } = new Dictionary<int, uint>();
+
+        public List<List<uint>> SpellBars { get; } = new List<List<uint>>();
     }
 }

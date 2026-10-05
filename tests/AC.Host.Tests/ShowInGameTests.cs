@@ -194,6 +194,54 @@ namespace AC.Host.Tests
         }
 
         /// <summary>
+        /// A line too long for one fragment - which is all the relay slips into the server's
+        /// stream - goes as several that each fit, broken at spaces, with nothing lost: Virindi
+        /// Tank's 1,470-character list of meta functions, sent whole, never showed at all.
+        /// </summary>
+        [Fact]
+        public async Task ALongLineGoesAsSeveralThatEachFitOneFragment()
+        {
+            ShowingTransport transport = new ShowingTransport();
+            await using GameHost host = Host(transport, out _);
+            string text = "[VTank] " + string.Join(", ", Enumerable.Range(0, 140).Select(i => "getcharintprop" + i + "[1]"));
+            Assert.True(text.Length > 1400);
+
+            Assert.True(host.ShowInGame(text, 7));
+
+            Assert.True(transport.Shown.Count > 2);
+            List<string> lines = transport.Shown.Select(m => ReadBack(m).Text).ToList();
+            foreach (AcMessage message in transport.Shown)
+                Assert.Single(PacketWriter.Fragment(message.Opcode, message.Payload.Span, 1));
+            Assert.All(lines, l => Assert.True(l.Length <= GameHost.LongestLineShown));
+            Assert.Equal(text, string.Join(" ", lines));
+            Assert.All(transport.Shown, m => Assert.Equal(7u, ReadBack(m).ChatType));
+            Assert.Equal(transport.Shown.Count, host.Statistics.ShownInGame);
+        }
+
+        /// <summary>The longest line that fits is sent as it is; one with no space to break at is cut where it must be.</summary>
+        [Fact]
+        public async Task ALineIsBrokenOnlyWhenItMustBeAndCutWhereThereIsNoSpace()
+        {
+            ShowingTransport transport = new ShowingTransport();
+            await using GameHost host = Host(transport, out _);
+            string longest = new string('a', GameHost.LongestLineShown);
+            string unbroken = new string('b', GameHost.LongestLineShown + 10);
+
+            host.ShowInGame(longest, 0);
+            host.ShowInGame(unbroken, 0);
+
+            Assert.Equal(3, transport.Shown.Count);
+            Assert.Single(PacketWriter.Fragment(transport.Shown[0].Opcode, transport.Shown[0].Payload.Span, 1));
+            Assert.Equal(longest, ReadBack(transport.Shown[0]).Text);
+            Assert.Equal(new string('b', GameHost.LongestLineShown), ReadBack(transport.Shown[1]).Text);
+            Assert.Equal(new string('b', 10), ReadBack(transport.Shown[2]).Text);
+
+            // One character more than the longest would need a second fragment.
+            AcMessage tooLong = new WireWriter(Opcodes.ServerMessage).String16L(new string('c', GameHost.LongestLineShown + 1)).U32(0).ToMessage();
+            Assert.Equal(2, PacketWriter.Fragment(tooLong.Opcode, tooLong.Payload.Span, 1).Count);
+        }
+
+        /// <summary>
         /// Text of awkward lengths, because the payload pads to a four-byte boundary and
         /// an off-by-one there produces a message that leaves cleanly and reads as rubbish.
         /// </summary>

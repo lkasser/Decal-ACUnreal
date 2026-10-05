@@ -554,7 +554,9 @@ namespace AC.Host.Tests
 
             Assert.Equal("VirindiTank", dto.Owner);
             Assert.True(dto.Enabled);
-            Assert.Equal(string.Empty, dto.Title);
+
+            // Shown by its view's title, as Decal's bar labelled a switch; routed by its owner.
+            Assert.Equal("Example Plugin", dto.Title);
 
             Assert.Equal(new[] { "loot", "range", "mode" }, dto.Controls.Select(c => c.Id));
 
@@ -580,6 +582,7 @@ namespace AC.Host.Tests
             Assert.False(plain.Enabled);
             Assert.Empty(plain.Controls);
             Assert.Null(plain.View);
+            Assert.Equal(string.Empty, plain.Title);
 
             Assert.Null(Wire.OverlayMapping.ToDto((DecalView)null));
         }

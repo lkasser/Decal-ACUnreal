@@ -26,8 +26,9 @@ namespace AC.Host
     /// and hands them over when it stops properly. The next host replays them through its own
     /// decoders before it applies the first message it relays, with nothing said to plugins while
     /// it does; then it tells plugins what a login tells them, in a login's order - the server,
-    /// the character, every object, the enchantments - and Decal's plugins hear Login and
-    /// LoginComplete from that, as they would at a login. To a plugin, the player has just logged in.
+    /// the character, every object, the enchantments, then the messages themselves - and Decal's
+    /// plugins hear Login, their ServerDispatch the login's messages, and LoginComplete from that,
+    /// as they would at a login. To a plugin, the player has just logged in.
     /// </para>
     /// <para>
     /// With nothing handed over - the host before crashed, or there was none - the host knows it
@@ -224,14 +225,32 @@ namespace AC.Host
             if (CanAct)
                 ActionsAllowed = snapshot.ActionsAllowed;
 
-            AnnounceLogin();
+            AnnounceLogin(_journal.Entries);
         }
 
         /// <summary>
-        /// Tells plugins what a login tells them, in a login's order, about the world as it now is.
-        /// Game thread only.
+        /// Tells plugins what a login tells them, in a login's order, about the world as it now is;
+        /// and gives <see cref="MessageSeen"/> the messages it was built from again, as a login
+        /// gives them, before the character is said to be whole. Game thread only.
         /// </summary>
-        private void AnnounceLogin()
+        /// <remarks>
+        /// <para>
+        /// The messages are for Decal's plugins, many of which never look at Decal's filters: they
+        /// keep their own track of the character and what it carries from the messages themselves,
+        /// through ServerDispatch, and build it afresh from the ones a login brings - the character's
+        /// description, every object created. Without them a plugin carried on knows nothing, and
+        /// says so: Virindi Global Inventory tracking no items at all. So each one goes by again,
+        /// in the order it first did, after Decal's Login and the objects and before LoginComplete -
+        /// where Decal's own plugins heard a login's messages, between the character arriving and
+        /// the client saying it had finished.
+        /// </para>
+        /// <para>
+        /// Only what a login would bring again, or what changed what it brings since: not what
+        /// told of a moment (see <see cref="RetoldOnCarryingOn"/>), which a plugin would take as
+        /// happening now - a tell relayed twice, a kill counted again.
+        /// </para>
+        /// </remarks>
+        private void AnnounceLogin(IReadOnlyList<JournalEntry> builtFrom)
         {
             if (!string.IsNullOrEmpty(_world.ServerName))
                 Raise(ServerConnected, _world.ServerName);
@@ -266,7 +285,90 @@ namespace AC.Host
             if (character.OpenVendorId != 0)
                 Raise(VendorChanged, character.OpenVendorId);
 
+            if (MessageSeen != null)
+            {
+                foreach (JournalEntry entry in builtFrom)
+                {
+                    if (RetoldOnCarryingOn(entry))
+                        Raise(MessageSeen, new GameMessageEventArgs(entry.Direction, entry.ToMessage()));
+                }
+            }
+
             RaisePlain(CharacterUpdated);
+        }
+
+        /// <summary>
+        /// Whether a message the world was built from is given to plugins again when the session is
+        /// carried on: whatever a login would bring again, or changed what it brings - and not what
+        /// only told of a moment, which no login repeats.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// Of the server's: not what was said - speech, tells, emotes, the server's own lines, the
+        /// rooms' chat, errors - nor combat's notices and deaths, an action's end, nor sounds and
+        /// effects. Everything else is the state of things: objects and their properties, the
+        /// character's description and enchantments, what moved where.
+        /// </para>
+        /// <para>
+        /// Of the client's: what it sends to enter the world, and its word that it has - the
+        /// action Decal's plugins wait for before they trust what they have heard. What the player
+        /// did since - spoke, used, cast, moved - is not done again.
+        /// </para>
+        /// </remarks>
+        internal static bool RetoldOnCarryingOn(JournalEntry entry)
+        {
+            AcMessage message = entry.ToMessage();
+            if (entry.Direction == PacketDirection.Outbound)
+            {
+                if (message.Opcode == Opcodes.TurbineChat)
+                    return false;
+
+                return message.Opcode != Opcodes.GameAction
+                    || (MessageDecoder.TryReadActionType(message, out uint action) && action == GameActions.LoginComplete);
+            }
+
+            switch (message.Opcode)
+            {
+                case Opcodes.HearSpeech:
+                case Opcodes.HearRangedSpeech:
+                case Opcodes.EmoteText:
+                case Opcodes.SoulEmote:
+                case Opcodes.ServerMessage:
+                case Opcodes.TurbineChat:
+                case Opcodes.PlayerKilled:
+                case Opcodes.Sound:
+                case Opcodes.PlayEffect:
+                    return false;
+
+                case Opcodes.GameEvent:
+                    if (!MessageDecoder.TryReadGameEventType(message, out uint gameEvent))
+                        return true;
+
+                    switch (gameEvent)
+                    {
+                        case GameEvents.Tell:
+                        case GameEvents.ChannelBroadcast:
+                        case GameEvents.CommunicationTransientString:
+                        case GameEvents.WeenieError:
+                        case GameEvents.WeenieErrorWithString:
+                        case GameEvents.AttackDone:
+                        case GameEvents.VictimNotification:
+                        case GameEvents.KillerNotification:
+                        case GameEvents.AttackerNotification:
+                        case GameEvents.DefenderNotification:
+                        case GameEvents.EvasionAttackerNotification:
+                        case GameEvents.EvasionDefenderNotification:
+                        case GameEvents.CombatCommenceAttack:
+                        case GameEvents.UseDone:
+                        case GameEvents.InventoryServerSaveFailed:
+                            return false;
+                        default:
+                            return true;
+                    }
+
+                default:
+                    return true;
+            }
         }
 
         /// <summary>

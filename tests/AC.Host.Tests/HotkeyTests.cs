@@ -215,6 +215,25 @@ namespace AC.Host.Tests
             }
         }
 
+        /// <summary>
+        /// Decal's bar labels the hotkey system's switch by its title, as Decal did: the overlay is
+        /// sent "Decal Hotkey System", not the "Decal/dhs" the window is routed and remembered by.
+        /// </summary>
+        [Fact]
+        public async Task TheHotkeySystemsSwitchGoesByItsTitle()
+        {
+            await using GameHost host = NewLiveHost();
+            DecalAgent agent = new DecalAgent(host, null);
+            host.AddPlugin(agent);
+            await host.StartAsync();
+
+            IReadOnlyList<OverlayWindowInfo> windows = await OnGameThread(host, host.CollectWindows);
+            AC.Host.Overlay.OverlayWindow dhs = AC.Host.Overlay.OverlayMapping.ToDto(windows.Single(w => w.Owner == OverlayViewWindow.OwnerFor(agent.Name, "dhs")));
+
+            Assert.Equal("Decal/dhs", dhs.Owner);
+            Assert.Equal("Decal Hotkey System", dhs.Title);
+        }
+
         [Fact]
         public async Task VirindiTanksHotkeysAreInVhsAndDecalsInDhsAndAKeyIsSetByPressingIt()
         {

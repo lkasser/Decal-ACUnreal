@@ -22,6 +22,36 @@ namespace AC.Host.World
 
         /// <summary>Objects whose container is <paramref name="containerId"/>.</summary>
         IEnumerable<WorldObject> ContentsOf(uint containerId);
+
+        /// <summary>How many were playing on the server when it announced its name; 0 before.</summary>
+        int ServerPopulation { get; }
+
+        /// <summary>
+        /// The account's name, as the server's character list gives it - what Decal called the
+        /// account, and its messages.xml the zone. Empty before the list has come.
+        /// </summary>
+        string AccountName { get; }
+
+        /// <summary>The account's characters, in the character list's order. Empty before it has come.</summary>
+        IReadOnlyList<AccountCharacter> AccountCharacters { get; }
+    }
+
+    /// <summary>One of the account's characters, as the character list names it.</summary>
+    public sealed class AccountCharacter
+    {
+        public AccountCharacter(uint id, string name, uint deleteTimeout)
+        {
+            Id = id;
+            Name = name ?? string.Empty;
+            DeleteTimeout = deleteTimeout;
+        }
+
+        public uint Id { get; }
+
+        public string Name { get; }
+
+        /// <summary>Seconds until a character being deleted is gone; 0 for one that is not being deleted.</summary>
+        public uint DeleteTimeout { get; }
     }
 
     /// <summary>
@@ -62,6 +92,12 @@ namespace AC.Host.World
         private IGameData _gameData = NullGameData.Instance;
 
         public string ServerName { get; private set; }
+
+        public int ServerPopulation { get; private set; }
+
+        public string AccountName { get; private set; } = string.Empty;
+
+        public IReadOnlyList<AccountCharacter> AccountCharacters { get; private set; } = Array.Empty<AccountCharacter>();
 
         public int ObjectCount => _objects.Count;
 
@@ -157,10 +193,18 @@ namespace AC.Host.World
         /// <summary>Raised when the next swing or shot of a repeating attack begins.</summary>
         public event EventHandler AttackCommenced;
 
-        internal void SetServerName(string name)
+        internal void SetServerName(string name, int population = 0)
         {
             ServerName = name;
+            ServerPopulation = population;
             ServerConnected?.Invoke(this, name);
+        }
+
+        /// <summary>The account and its characters, from the server's character list.</summary>
+        internal void SetAccount(string name, IReadOnlyList<AccountCharacter> characters)
+        {
+            AccountName = name ?? string.Empty;
+            AccountCharacters = characters ?? Array.Empty<AccountCharacter>();
         }
 
         internal void SetPlayerId(uint id)
