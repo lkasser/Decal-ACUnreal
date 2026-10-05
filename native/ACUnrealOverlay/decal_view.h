@@ -44,8 +44,21 @@ struct DecalWindowLook {
     bool ghosted = false;
     bool click_through = false;
     int alpha = 255;
+    int width = 0;   // the view's size as drawn, in Decal pixels
+    int height = 0;
+    std::string stuck;   // the screen edges a hudified window keeps to
 };
 DecalWindowLook DescribeDecalWindow(const std::string& owner, const View& view);
+
+// Decal's ViewAlpha, from its registry: how opaque a Decal view starts, until the player changes
+// it from its title bar. VVS's views start opaque whatever this says.
+void SetDecalViewAlpha(int alpha);
+
+// VVS's bar is a hudified VVS view: kept on screen and against the edges it was pushed to, as
+// any hudified view, and to the left edge until moved, as VVS made it (GhostStickyLeft). Call
+// once a frame inside the bar's window, after anything that moves it; `moved` says whether the
+// player moved it this frame. `stored` is the edges vvs.s3db says it was left against, or null.
+void KeepVvsBarOnScreen(bool moved, const std::string* stored);
 
 // How a plugin's entry on the bar looks.
 enum class SwitchLook { Open, Closed, Faulted };
@@ -68,19 +81,20 @@ enum class BarDrag { Free, Across, Down, None };
 // docks it to another edge.
 //
 // The grip: a press that drags moves the bar's window; a press that does not is a click,
-// returned as true. Upright on a bar across the top, lying down on one down a side.
-bool DecalBarGrip(const char* id, const char* tooltip, bool vertical = false, BarDrag drag = BarDrag::Free);
+// returned as true. Upright on a bar across the top, lying down on one down a side; its lines
+// `span` long.
+bool DecalBarGrip(const char* id, const char* tooltip, bool vertical = false, BarDrag drag = BarDrag::Free, float span = 15.0f);
 
 // One of the bar's 16-pixel image buttons: its image, or its down image while held.
 bool DecalBarButton(const char* id, const char* up, const char* down, const char* tooltip);
 
-// A plugin's switch, compact: a small square of Decal's gold switch texture while its window
-// is open, the red one while closed, the grey one when faulted, with the plugin's icon on it.
-bool DecalIconSwitch(const char* id, const std::string& icon, SwitchLook look, const char* tooltip);
+// A plugin's switch, compact: Decal's gold switch texture while its window is open, the red one
+// while closed, the grey one when faulted, `size` big, with the plugin's icon in its middle.
+bool DecalIconSwitch(const char* id, const std::string& icon, SwitchLook look, const char* tooltip, ImVec2 size = ImVec2(20.0f, 21.0f));
 
 // A plugin's switch, expanded: the whole gold or red switch bitmap, its icon and its name.
 bool DecalLabelSwitch(const char* id, const std::string& label, const std::string& icon, SwitchLook look, float width,
-                      const char* tooltip);
+                      const char* tooltip, float height = 21.0f);
 
 // Virindi View Service's bar: a 20-pixel cell per view, the open view's icon on a square of the
 // theme's button shadow, and a rule between one plugin's views and the next's. A press toggles

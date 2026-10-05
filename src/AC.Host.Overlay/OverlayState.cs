@@ -265,6 +265,12 @@ namespace AC.Host.Overlay
 
         /// <summary>DecalControls.Progress.</summary>
         public const string Progress = "progress";
+
+        /// <summary>VVS's HudPictureBox: an image, or a part of one, stretched over the control.</summary>
+        public const string Picture = "picture";
+
+        /// <summary>VVS's HudConsole: coloured lines, the newest at the bottom, wrapped and scrolled.</summary>
+        public const string Console = "console";
     }
 
     /// <summary>The kinds of list column, as the wire spells them.</summary>
@@ -382,6 +388,39 @@ namespace AC.Host.Overlay
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public int? Y { get; set; }
 
+        /// <summary>
+        /// The screen edges a hudified window was left stuck to, VVS's LocSticky: "L" or "R",
+        /// then "T" or "B". Absent for none, or for a window not left hudified.
+        /// </summary>
+        [JsonPropertyName("stuck")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string Stuck { get; set; }
+
+        /// <summary>
+        /// The size the player left a window they can resize at, VVS's UserW and UserH, which the
+        /// overlay opens it at and tells the plugin with "resize". Absent when there is none.
+        /// </summary>
+        [JsonPropertyName("stored_width")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? StoredWidth { get; set; }
+
+        [JsonPropertyName("stored_height")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? StoredHeight { get; set; }
+
+        /// <summary>How small and how large the player may make it: VVS's MinimumClientArea and MaximumClientArea.</summary>
+        [JsonPropertyName("min_width")]
+        public int MinWidth { get; set; }
+
+        [JsonPropertyName("min_height")]
+        public int MinHeight { get; set; }
+
+        [JsonPropertyName("max_width")]
+        public int MaxWidth { get; set; }
+
+        [JsonPropertyName("max_height")]
+        public int MaxHeight { get; set; }
+
         [JsonPropertyName("root")]
         public OverlayViewControl Root { get; set; }
     }
@@ -403,6 +442,14 @@ namespace AC.Host.Overlay
         [JsonPropertyName("length")]
         public int Length { get; set; } = 250;
 
+        /// <summary>BarAlpha: how opaque the bar is, 0 to 255; Decal's default 255.</summary>
+        [JsonPropertyName("alpha")]
+        public int Alpha { get; set; } = 255;
+
+        /// <summary>ViewAlpha: how opaque Decal's own views are, 0 to 255, until the player changes one; Decal's default 255.</summary>
+        [JsonPropertyName("view_alpha")]
+        public int ViewAlpha { get; set; } = 255;
+
         /// <summary>Decal's own values, from the 32-bit registry where Decal keeps them; null when there are none.</summary>
         public static OverlayDecalBar ReadRegistry()
         {
@@ -415,19 +462,57 @@ namespace AC.Host.Overlay
                 if (decal == null || decal.GetValue("BarLength") == null)
                     return null;
                 int Read(string name, int fallback) => decal.GetValue(name) is int value ? value : fallback;
-                return new OverlayDecalBar
-                {
-                    State = Read("BarState", 0) == 1 ? 1 : 0,
-                    Dock = Math.Clamp(Read("BarDock", 0), 0, 2),
-                    Start = Math.Max(0, Read("BarStart", 0)),
-                    Length = Math.Max(112, Read("BarLength", 250)),
-                };
+                return FromValues(Read("BarState", 0), Read("BarDock", 0), Read("BarStart", 0), Read("BarLength", 250),
+                                  Read("BarAlpha", 255), Read("ViewAlpha", 255));
             }
             catch (Exception ex) when (ex is System.Security.SecurityException || ex is UnauthorizedAccessException || ex is System.IO.IOException)
             {
                 return null;
             }
         }
+
+        /// <summary>
+        /// The bar from Decal's registry values as Inject.dll read them: compact only for a
+        /// BarState of 1, the dock one of the three, at least 112 long, and the two alphas within
+        /// a byte.
+        /// </summary>
+        public static OverlayDecalBar FromValues(int state, int dock, int start, int length, int alpha, int viewAlpha)
+            => new OverlayDecalBar
+            {
+                State = state == 1 ? 1 : 0,
+                Dock = Math.Clamp(dock, 0, 2),
+                Start = Math.Max(0, start),
+                Length = Math.Max(112, length),
+                Alpha = Math.Clamp(alpha, 0, 255),
+                ViewAlpha = Math.Clamp(viewAlpha, 0, 255),
+            };
+    }
+
+    /// <summary>
+    /// The VVS bar as Virindi View Service left it, from vvs.s3db: where the player left it - its
+    /// "VirindiViewService:VVS Bar" row, which VVS put back because the bar is always hudified -
+    /// and its ExtraInfo row VVSBarHorizontal. Absent when the store has neither.
+    /// </summary>
+    public sealed class OverlayVvsBar
+    {
+        /// <summary>Where it was left, on screen; absent to start where VVS started it, (0, 52).</summary>
+        [JsonPropertyName("x")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? X { get; set; }
+
+        [JsonPropertyName("y")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? Y { get; set; }
+
+        /// <summary>The edges it was left stuck to, as a view's: absent for VVS's own, the left.</summary>
+        [JsonPropertyName("stuck")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string Stuck { get; set; }
+
+        /// <summary>Across the screen rather than down it; absent when the store does not say.</summary>
+        [JsonPropertyName("horizontal")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public bool? Horizontal { get; set; }
     }
 
     /// <summary>A plugin's own button on a view's title bar. Pressing it sends "press" naming it.</summary>
@@ -545,6 +630,72 @@ namespace AC.Host.Overlay
         /// <summary>A List's rows. Each row has one cell per column; a short row leaves the rest blank.</summary>
         [JsonPropertyName("rows")]
         public List<OverlayViewRow> Rows { get; set; } = new List<OverlayViewRow>();
+
+        // What only some controls have goes over only when they have it: a view of several
+        // hundred controls would otherwise carry each of these, empty, in every snapshot.
+
+        /// <summary>What a tooltip says over the control; absent for none.</summary>
+        [JsonPropertyName("tooltip")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string Tooltip { get; set; }
+
+        /// <summary>A label that takes a click, which sends "press".</summary>
+        [JsonPropertyName("clickable")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Clickable { get; set; }
+
+        /// <summary>A label's face by name, "Verdana"; absent for the theme's.</summary>
+        [JsonPropertyName("font")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string Font { get; set; }
+
+        /// <summary>A label's size in points; absent to go by <see cref="FontSize"/>.</summary>
+        [JsonPropertyName("font_points")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public double FontPoints { get; set; }
+
+        /// <summary>A label centred from top to bottom.</summary>
+        [JsonPropertyName("middle")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Middle { get; set; }
+
+        /// <summary>An edit box's count of the plugin's requests for the keyboard: a higher one puts the cursor in it.</summary>
+        [JsonPropertyName("focus_request")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int FocusRequest { get; set; }
+
+        /// <summary>A picture's part of its image - left, top, right, bottom, as fractions; absent for all of it.</summary>
+        [JsonPropertyName("uv")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<double> Uv { get; set; }
+
+        /// <summary>A console's lines, oldest first.</summary>
+        [JsonPropertyName("lines")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<OverlayViewLine> Lines { get; set; }
+    }
+
+    /// <summary>One line of a console: coloured runs of text, in order.</summary>
+    public sealed class OverlayViewLine
+    {
+        [JsonPropertyName("segments")]
+        public List<OverlayViewSegment> Segments { get; set; } = new List<OverlayViewSegment>();
+    }
+
+    /// <summary>A run of a console line in one colour.</summary>
+    public sealed class OverlayViewSegment
+    {
+        [JsonPropertyName("text")]
+        public string Text { get; set; } = string.Empty;
+
+        /// <summary>VVS's eConsoleColorClass, which the theme's colour scheme turns into a colour.</summary>
+        [JsonPropertyName("class")]
+        public int Class { get; set; }
+
+        /// <summary>A link: a click on it sends "click", the line as the row and this segment as the value.</summary>
+        [JsonPropertyName("link")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool Link { get; set; }
     }
 
     public sealed class OverlayViewPage
@@ -699,6 +850,11 @@ namespace AC.Host.Overlay
         [JsonPropertyName("decal_bar")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public OverlayDecalBar DecalBar { get; set; }
+
+        /// <summary>VVS's bar as the player left it in the standard client; absent when vvs.s3db does not say.</summary>
+        [JsonPropertyName("vvs_bar")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public OverlayVvsBar VvsBar { get; set; }
 
         /// <summary>
         /// Who wants the next key the player presses, or empty: the overlay catches it, keeps it

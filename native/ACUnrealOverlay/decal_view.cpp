@@ -4,6 +4,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <optional>
 #include <string>
@@ -263,6 +264,10 @@ struct Theme {
     ImU32 menu_hover = kClear;                   // ComboBackground_Selected, under the item the pointer is on
     ImU32 menu_left = kClear;                    // MenuLeftAreaFill: the strip down a menu's left
     ImU32 bar_underlay = kClear;                 // Hint_VVSBarItemUnderlay; clear, ButtonShadow
+    Fill console_back{nullptr, IM_COL32(0, 0, 0, 220)};   // ConsoleBackground: Float's black at 220
+    bool console_black_text = false;             // ConsoleColorScheme: BlackText_Scheme rather than AC_Scheme
+    const char* console_face = "Palatino Linotype";       // ConsoleTextFontFace, at ConsoleTextFontSize 8
+    Fill combo_arrow_up{"portal:060012B2", kClear};       // ComboArrowUp: the arrow while the list is down
 };
 
 // CloseButtonUp and CloseButtonDown, in Decal, Float and two of the Minimalists:
@@ -272,8 +277,15 @@ constexpr Layer kCloseHeldLayers[] = {Solid(kBlack), Picture(kCloseDown)};
 constexpr Layer kFloatCloseLayers[] = {Solid(kBlack), Picture(kFloatCloseUp)};
 constexpr Layer kFloatCloseHeldLayers[] = {Solid(kBlack), Picture(kFloatCloseDown)};
 
+// A theme given in order, with what comes after its tabs set apart: the Decal theme's console,
+// which is the stone of its lists rather than Float's black.
+constexpr Theme WithConsole(Theme theme, Fill back) {
+    theme.console_back = back;
+    return theme;
+}
+
 // VVS's Decal theme: parchment and gold, as Decal itself drew its views.
-constexpr Theme kDecalTheme = {
+constexpr Theme kDecalTheme = WithConsole({
     "Decal",
     {"portal:0600126F", kParchmentStandIn},
     {"portal:0600126F", kParchmentStandIn},
@@ -301,7 +313,7 @@ constexpr Theme kDecalTheme = {
     TabStyle::Images, IM_COL32(0xB4, 0x7E, 0x2B, 0xFF),
     IM_COL32(0, 0, 0, 0xFF), IM_COL32(192, 192, 192, 0xFF),
     8.0f, false, 10.0f, 6.0f, 6.0f,
-};
+}, {kStoneTile, kStoneStandIn});   // ConsoleBackground: ACImage(100668042, DrawTiled)
 
 // VVS's Float theme: black glass edged in a thin gold rule, what the player's HUDs and most
 // of their windows are drawn in.
@@ -532,6 +544,8 @@ constexpr Theme kMinimalistTheme = {
     .menu_hover = kMinChosen,
     .menu_left = kMinShade,                   // color7
     .bar_underlay = kMinShade,                // ButtonShadow
+    .console_back = {nullptr, kWhite},        // ConsoleBackground: color2
+    .console_black_text = true,               // BlackText_Scheme
 };
 
 // VVS's Minimalist Green: olive and tan over the stone of Decal's lists, in Verdana.
@@ -647,6 +661,8 @@ constexpr Theme kMinimalistGreenTheme = {
     .menu_hover = kGreenDark,
     .menu_left = kGreenBrown,                 // e
     .bar_underlay = kGreenOlive,              // m_a
+    .console_back = {kStoneTile, kStoneStandIn},   // fillOption, its every surface's stone
+    .console_face = "Verdana",                // j, at weight k, 400
 };
 
 // VVS's Minimalist Black: black and charcoal, lettered in teal.
@@ -677,6 +693,8 @@ constexpr auto kBlackScrollDown =
     ArrowButton(kBlackLightOver, kBlackDarkUnder, kBlackEdge, kBlackEdge, Glyph(kArrowDown, kBlackTeal, kBlackNavy));
 constexpr auto kBlackComboArrow = ArrowButton(kBlackLightOver, kBlackDarkUnder, kBlackEdge, kBlackEdge,
                                               Glyph(kArrowDown, kBlackTeal, kBlackNavy), kPixel16, 15.0f * kPixel16);
+constexpr auto kBlackComboArrowUp = ArrowButton(kBlackDarkOver, kBlackLightUnder, kBlackEdge, kBlackEdge,
+                                                Glyph(kArrowDown, kBlackTeal, kBlackNavy), kPixel16, 15.0f * kPixel16);
 constexpr auto kBlackBubbleTop = BubbleTop(kBlackLeftHalf, kBlackRightHalf, kBlackEdge, kBlackEdge);
 constexpr auto kBlackBubbleMiddle = BubbleMiddle(kBlackLeftHalf, kBlackRightHalf, kBlackEdge, kBlackEdge);
 constexpr auto kBlackBubbleBottom = BubbleBottom(kBlackLeftHalf, kBlackRightHalf, kBlackEdge, kBlackEdge);
@@ -765,6 +783,8 @@ constexpr Theme kMinimalistBlackTheme = {
     .menu_text = kBlackTeal,
     .menu_hover = kBlackChosen,
     .bar_underlay = kBlackEdge,
+    .console_back = {nullptr, kBlackPanel},   // color2
+    .combo_arrow_up = Stack(kBlackComboArrowUp, kBlack),   // value21: the dark half over
 };
 
 // VVS's Minimalist Transparent: black glass, most of it barely there, edged in sea green.
@@ -865,6 +885,7 @@ constexpr Theme kMinimalistTransparentTheme = {
     .menu_hover = kGlassChosen,
     .menu_left = kGlassDark,
     .bar_underlay = kGlassShade,
+    .console_back = {nullptr, kGlassLight},   // color2
 };
 
 // "Minimalist H.S.", VVS's hot-dog stand: red and yellow, set only by the H.S. button on the
@@ -884,6 +905,8 @@ constexpr auto kHsScrollDown = ArrowButton(Solid(kHsLight, 0.0f, 0.0f, 1.0f, 0.3
                                            Glyph(kArrowDown, kWhite, kBlack));
 constexpr auto kHsComboArrow = ArrowButton(Solid(kHsLight, 0.0f, 0.0f, 1.0f, 0.3f), Solid(kHsDark, 0.0f, 0.3f, 1.0f, 0.7f), kHsLight, kHsDark,
                                            Glyph(kArrowDown, kWhite, kBlack), kPixel16, 15.0f * kPixel16);
+constexpr auto kHsComboArrowUp = ArrowButton(Solid(kHsDark, 0.0f, 0.0f, 1.0f, 0.7f), Solid(kHsLight, 0.0f, 0.7f, 1.0f, 0.3f), kHsLight, kHsDark,
+                                             Glyph(kArrowDown, kWhite, kBlack), kPixel16, 15.0f * kPixel16);
 constexpr auto kHsBubbleTop = BubbleTop(Solid(kHsDark, 0.0f, 0.0f, 0.5f, 1.0f), Solid(kHsLight, 0.5f, 0.0f, 0.5f, 1.0f), kHsLight, kHsDark);
 constexpr auto kHsBubbleMiddle = BubbleMiddle(Solid(kHsDark, 0.0f, 0.0f, 0.5f, 1.0f), Solid(kHsLight, 0.5f, 0.0f, 0.5f, 1.0f), kHsLight, kHsDark);
 constexpr auto kHsBubbleBottom = BubbleBottom(Solid(kHsDark, 0.0f, 0.0f, 0.5f, 1.0f), Solid(kHsLight, 0.5f, 0.0f, 0.5f, 1.0f), kHsLight, kHsDark);
@@ -971,6 +994,9 @@ constexpr Theme kHotDogStandTheme = {
     .menu_text = kWhite,
     .menu_hover = kHsLight,
     .bar_underlay = kHsDark,
+    .console_back = {nullptr, kHsYellow},     // color2
+    .console_black_text = true,               // BlackText_Scheme
+    .combo_arrow_up = Stack(kHsComboArrowUp, kHsDark),     // value26
 };
 
 // The themes a window's menu offers, and the VVS bar's "ab" steps through, in the order VVS
@@ -1004,6 +1030,9 @@ constexpr float kRowHeight = 16.0f;      // one list row: an icon's height
 constexpr int kAlphaStep = 25;
 constexpr int kAlphaMin = 40;
 constexpr int kAlphaMax = 255;
+
+// How near the top of the screen a hudified view's body may go: VVS kept it four pixels down.
+constexpr float kGhostTop = 4.0f;
 
 // What VVS adds to each list column's declared width. Not in the theme; read off Virindi
 // Tank's own Monsters page, whose headings are labels placed by hand over the list: its
@@ -1043,15 +1072,38 @@ struct WindowMemory {
 
     // What the player chose from the title bar, kept in the overlay's ini beside where the
     // window was left - as VVS kept them per machine, in its StoredViewInfo table. Unset
-    // means whatever the host says the view starts as.
-    int alpha = kAlphaMax;
+    // means whatever the host says the view starts as - and for the alpha, -1, Decal's ViewAlpha
+    // for a Decal view and opaque for VVS's.
+    int alpha = -1;
     std::string theme;
     std::optional<bool> ghosted;
     std::optional<bool> click_through;
 
     // Which screen edges a hudified window was pushed against and stays against - VVS's
-    // GhostSticky - as "L", "R", "T" and "B".
+    // GhostSticky - as "L", "R", "T" and "B". Until known, the host's word from vvs.s3db.
     std::string stuck;
+    bool stuck_known = false;
+
+    // A window the player may resize: the size it is drawn at, in Decal pixels - what the
+    // player's hand gave it, kept in the ini; else what vvs.s3db said; else the plugin's - and
+    // the size the plugin last said and was last told, so each hears of the other's change.
+    bool has_size = false;
+    bool size_chosen = false;
+    int width = 0;
+    int height = 0;
+    int host_width = -1;
+    int host_height = -1;
+    int asked_width = -1;
+    int asked_height = -1;
+
+    // A resize by the frame, under way: where the pointer, the window and its size began.
+    ImVec2 resize_mouse;
+    ImVec2 resize_pos;
+    int resize_width = 0;
+    int resize_height = 0;
+
+    std::map<std::string, int> focus;          // each edit box's last focus request seen
+    std::map<std::string, float> console_max;  // each console's scroll range last frame
 };
 
 std::map<std::string, WindowMemory>& Memory() {
@@ -1093,6 +1145,16 @@ ImFont* FontFor(bool bold) {
     const DecalFonts& fonts = GetDecalFonts();
     ImFont* font = bold ? fonts.bold : fonts.regular;
     return font != nullptr ? font : ImGui::GetFont();
+}
+
+// A face by name, as a plugin or a theme asked VVS for one: Verdana, Palatino Linotype, or the
+// themes' Times New Roman for anything else - and for either of those where Windows has none.
+ImFont* FontFor(bool bold, std::string_view face) {
+    const DecalFonts& fonts = GetDecalFonts();
+    ImFont* font = nullptr;
+    if (face.size() == 7 && _strnicmp(face.data(), "Verdana", 7) == 0) font = bold ? fonts.verdana_bold : fonts.verdana;
+    else if (face.size() == 17 && _strnicmp(face.data(), "Palatino Linotype", 17) == 0) font = fonts.palatino;
+    return font != nullptr ? font : FontFor(bold);
 }
 
 void DrawImage(ImDrawList* draw, const Texture* tex, ImVec2 a, ImVec2 b, ImVec2 uv0 = ImVec2(0, 0), ImVec2 uv1 = ImVec2(1, 1)) {
@@ -1337,6 +1399,9 @@ struct Rect {
 };
 
 void DrawControl(Frame& f, const ViewControl& c, const Rect& parent, int ordinal);
+bool ColourKey(const std::string& key, ImU32& colour);
+void ShowThemedTooltip(const Theme& t, const char* text);
+void ThemedTooltip(const Theme& t, const char* text);
 
 Rect Place(const ViewControl& c, const Rect& parent) {
     // A layout with no size of its own fills its parent - that is what a notebook page's
@@ -1354,8 +1419,11 @@ Rect Place(const ViewControl& c, const Rect& parent) {
 constexpr float kDecalFontSizeToPoints = 0.611f;
 
 void DrawStatic(Frame& f, const ViewControl& c, const Rect& r) {
-    ImFont* font = FontFor(c.bold);
-    const float points = c.font_size > 0 ? static_cast<float>(c.font_size) * kDecalFontSizeToPoints : f.t.text_points;
+    // The plugin's own face and size in points when it gives them, as VVS's own controls and
+    // drawing were lettered; else Decal's size, read as VVS read it; else the theme's.
+    ImFont* font = FontFor(c.bold, c.font);
+    const float points = c.font_points > 0.0f ? c.font_points
+                         : c.font_size > 0 ? static_cast<float>(c.font_size) * kDecalFontSizeToPoints : f.t.text_points;
     const float size = PointsToPixels(points) * f.s;
     const ImU32 colour = c.text_color >= 0 ? FromArgb(c.text_color) : f.t.view_text;
     const ImVec2 a = Screen(f, r.x, r.y);
@@ -1363,21 +1431,40 @@ void DrawStatic(Frame& f, const ViewControl& c, const Rect& r) {
     const ImVec4 clip(a.x, a.y, b.x, b.y);
 
     // A label with room for more than one line is a paragraph, and wraps; one line high is
-    // a label, and is clipped rather than wrapped into the control below it.
-    const bool paragraph = (b.y - a.y) > size * 1.8f;
+    // a label, and is clipped rather than wrapped into the control below it - unless it is
+    // centred from top to bottom, which is one line wherever it is put.
+    const bool paragraph = !c.middle && (b.y - a.y) > size * 1.8f;
     const ImVec2 measured = Measure(font, size, c.text);
 
     float x = a.x;
+    float y = a.y;
     if (!paragraph) {
         if (c.justify == Justify::Center) x = a.x + ((b.x - a.x) - measured.x) * 0.5f;
         else if (c.justify == Justify::Right) x = b.x - measured.x;
+        if (c.middle) y = a.y + std::floor(((b.y - a.y) - measured.y) * 0.5f);
     }
 
     // VVS drew a shadow of size one as the text again, in black, a pixel down and right. A
     // label that asks for none has the theme's own, where it gives one.
     if (c.shadow)
-        Text(f.draw, font, size, ImVec2(x + f.s, a.y + f.s), IM_COL32(0, 0, 0, 0xFF), c.text, &clip, paragraph ? (b.x - a.x) : 0.0f);
-    HaloText(f.draw, font, size, ImVec2(x, a.y), colour, c.shadow ? kClear : f.t.text_halo, c.text, &clip, paragraph ? (b.x - a.x) : 0.0f);
+        Text(f.draw, font, size, ImVec2(x + f.s, y + f.s), IM_COL32(0, 0, 0, 0xFF), c.text, &clip, paragraph ? (b.x - a.x) : 0.0f);
+    HaloText(f.draw, font, size, ImVec2(x, y), colour, c.shadow ? kClear : f.t.text_halo, c.text, &clip, paragraph ? (b.x - a.x) : 0.0f);
+
+    // A label something listens to takes a click, as VVS's HudStaticText did.
+    if (c.clickable && c.enabled && Hit("label", a, b)) Emit(f, "press", c.name, std::string());
+}
+
+// VVS's HudPictureBox: the image, or the part of it the plugin chose, stretched over the
+// control - a plain colour for an ACImage(Color). It does not move when pressed, as a Decal
+// button's face does; it takes a click when something listens for one.
+void DrawPicture(Frame& f, const ViewControl& c, const Rect& r) {
+    const ImVec2 a = Screen(f, r.x, r.y);
+    const ImVec2 b = Screen(f, r.x + r.w, r.y + r.h);
+    ImU32 swatch = 0;
+    if (ColourKey(c.image, swatch)) f.draw->AddRectFilled(a, b, Col(swatch));
+    else if (const Texture* tex = FindTexture(c.image)) DrawImage(f.draw, tex, a, b, ImVec2(c.uv[0], c.uv[1]), ImVec2(c.uv[2], c.uv[3]));
+
+    if (c.clickable && c.enabled && Hit("picture", a, b)) Emit(f, "press", c.name, std::string());
 }
 
 void DrawCheckbox(Frame& f, const ViewControl& c, const Rect& r) {
@@ -1508,6 +1595,16 @@ void DrawEdit(Frame& f, const ViewControl& c, const Rect& r) {
     ImGui::SetNextItemWidth(b.x - a.x);
     if (!c.enabled) ImGui::BeginDisabled();
 
+    // The plugin asking for the keyboard - Virindi HUDs' CW_OpenBox - puts the cursor in the box,
+    // once for each time it asks.
+    auto asked = f.memory.focus.find(key);
+    if (asked == f.memory.focus.end()) {
+        f.memory.focus[key] = c.focus_request;
+    } else if (c.focus_request != asked->second) {
+        if (c.focus_request > asked->second && c.enabled) ImGui::SetKeyboardFocusHere();
+        asked->second = c.focus_request;
+    }
+
     auto resize = [](ImGuiInputTextCallbackData* data) -> int {
         if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
             auto* str = static_cast<std::string*>(data->UserData);
@@ -1529,7 +1626,10 @@ void DrawEdit(Frame& f, const ViewControl& c, const Rect& r) {
         if (!editing) edit.text = text;
         edit.frame = ImGui::GetFrameCount();
     } else if (editing) {
-        if (ImGui::IsItemDeactivatedAfterEdit()) Emit(f, "set", c.name, found->second.text);
+        // Let go by the Enter key, it is "enter" - VVS's key event for its scan code, which a chat
+        // box sends its line on; let go any other way, the new text is only "set".
+        const bool entered = ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter);
+        if (ImGui::IsItemDeactivatedAfterEdit()) Emit(f, entered ? "enter" : "set", c.name, found->second.text);
         f.memory.edits.erase(found);
     }
 }
@@ -1541,12 +1641,14 @@ void DrawChoice(Frame& f, const ViewControl& c, const Rect& r) {
     // The arrow keeps its proportions at the control's height, at the right-hand end; one the
     // theme builds for itself is square. A theme with a ComboBackground_Unselected of its own
     // has it stop at the arrow, as HudCombo did; the rest lie their list's under both.
-    const Texture* arrow = f.t.combo_arrow.layers == nullptr ? FindTexture(f.t.combo_arrow.image) : nullptr;
+    // ComboArrowDown at rest, and ComboArrowUp while the list is down, as HudCombo drew them.
+    const Fill& arrow_fill = ImGui::IsPopupOpen("options") ? Either(f.t.combo_arrow_up, f.t.combo_arrow) : f.t.combo_arrow;
+    const Texture* arrow = arrow_fill.layers == nullptr && arrow_fill.image != nullptr ? FindTexture(arrow_fill.image) : nullptr;
     const float ah = b.y - a.y;
     const float aw = arrow != nullptr ? ah * arrow->width / arrow->height : ah;
     if (IsSet(f.t.combo_box)) Paint(f.draw, f.t.combo_box, a, ImVec2(b.x - aw, b.y), f.s);
     else Paint(f.draw, f.t.list, a, b, f.s);
-    if (f.t.combo_arrow.layers != nullptr) DrawLayers(f.draw, f.t.combo_arrow, ImVec2(b.x - aw, a.y), b, f.s);
+    if (arrow_fill.layers != nullptr) DrawLayers(f.draw, arrow_fill, ImVec2(b.x - aw, a.y), b, f.s);
     else DrawImage(f.draw, arrow, ImVec2(b.x - aw, a.y), b);
 
     ImFont* font = FontFor(false);
@@ -1814,6 +1916,172 @@ void DrawList(Frame& f, const ViewControl& c, const Rect& r) {
     else offset = 0.0f;
 }
 
+// A console line's colour, by its eConsoleColorClass, from the theme's colour scheme: AC_Scheme,
+// the client's own chat colours, or BlackText_Scheme's black, which the Minimalist theme and the
+// hot-dog stand lettered theirs in. A class the scheme has no colour for is Tomato, as
+// SchemeBase.TranslateColor answered.
+ImU32 ConsoleColour(const Theme& t, int cls) {
+    if (cls == 98) return IM_COL32(0x00, 0xB2, 0x00, 0xFF);   // Link, the same in both
+    if (t.console_black_text) {
+        switch (cls) {
+            case 11: return IM_COL32(0xB8, 0x00, 0x00, 0xFF);  // StatusError
+            case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10: case 12: case 13: case 99:
+                return IM_COL32(0x00, 0x00, 0x00, 0xFF);
+            default: return IM_COL32(0xFF, 0x63, 0x47, 0xFF);
+        }
+    }
+    switch (cls) {
+        case 0: case 99: return IM_COL32(0x7F, 0xFF, 0x7E, 0xFF);   // SystemMessage, Unknown
+        case 1: return IM_COL32(0x3E, 0xBE, 0xFF, 0xFF);            // Magic
+        case 2: return IM_COL32(0xFF, 0x95, 0x95, 0xFF);            // MyMeleeAttack
+        case 3: return IM_COL32(0xFF, 0x3E, 0x3E, 0xFF);            // OtherMeleeAttack
+        case 4: return IM_COL32(0xD2, 0xD2, 0x63, 0xFF);            // MyTell
+        case 5: case 8: return IM_COL32(0xFF, 0xFF, 0x3E, 0xFF);    // OtherTell, FellowChat
+        case 6: return IM_COL32(0xB4, 0xDC, 0xEF, 0xFF);            // GlobalChat
+        case 7: return IM_COL32(0xED, 0x92, 0x1E, 0xFF);            // AllegianceChat
+        case 9: return IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);            // OpenChat
+        case 10: return IM_COL32(0xD2, 0xD2, 0xC7, 0xFF);           // OpenEmote
+        case 11: return IM_COL32(0xFF, 0x00, 0x00, 0xFF);           // StatusError
+        case 12: return IM_COL32(0x3E, 0xDC, 0xDC, 0xFF);           // StatRaised
+        case 13: return IM_COL32(0xFF, 0x7E, 0xFF, 0xFF);           // RareFound
+        default: return IM_COL32(0xFF, 0x63, 0x47, 0xFF);           // Tomato
+    }
+}
+
+// What VVS's console measured its lines against: two pixels in from each side, a line
+// sixteen pixels high - ConsoleLineHeight - and the scroll bar down the right.
+constexpr float kConsoleInset = 2.0f;
+constexpr float kConsoleLine = 16.0f;
+constexpr float kConsolePoints = 8.0f;   // ConsoleTextFontSize, the same in every theme
+
+// One run of a console line as drawn: where it starts across, its text, and the segment of the
+// line it came from.
+struct ConsoleRun {
+    float x;
+    std::string text;
+    size_t segment;
+};
+
+// A console line wrapped as HudConsole wrapped it: each segment written on from where the last
+// stopped; one too long broken at the last space that lets the part before it fit - or, with no
+// such space, after as many letters as fit - and the rest, its leading spaces dropped, begun
+// afresh on the next line.
+std::vector<std::vector<ConsoleRun>> WrapConsoleLine(ImFont* font, float size, const ConsoleLine& line, float width) {
+    std::vector<std::vector<ConsoleRun>> lines(1);
+    float x = 0.0f;
+    for (size_t s = 0; s < line.segments.size(); ++s) {
+        std::string text = line.segments[s].text;
+        while (!text.empty()) {
+            const float room = width - x;
+            const float whole = Measure(font, size, text).x;
+            if (whole <= room) {
+                lines.back().push_back(ConsoleRun{x, text, s});
+                x += whole;
+                break;
+            }
+
+            size_t cut = 0;
+            for (size_t i = 0; i < text.size(); ++i) {
+                if (i == 0 || text[i] == ' ' || text[i] == '\t') {
+                    if (Measure(font, size, std::string_view(text).substr(0, i)).x > room) break;
+                    cut = i;
+                }
+            }
+            if (cut == 0) {
+                for (size_t j = 0; j < text.size() && Measure(font, size, std::string_view(text).substr(0, j)).x <= room; ++j)
+                    cut = j;
+            }
+            // Past VVS, which went round for ever on a single letter too wide for the console.
+            if (cut == 0) cut = std::max<size_t>(1, text.size() - 1);
+
+            lines.back().push_back(ConsoleRun{x, text.substr(0, cut), s});
+            text = text.substr(cut);
+            const size_t start = text.find_first_not_of(' ');
+            text = start == std::string::npos ? std::string() : text.substr(start);
+            lines.emplace_back();
+            x = 0.0f;
+        }
+    }
+    return lines;
+}
+
+// VVS's HudConsole: ConsoleBackground over it; the lines in the theme's console face, each
+// wrapped to the width inside the scroll bar, sixteen pixels to a line and the newest at the
+// bottom; a link a click on which sends "click" with the line and the segment; and the scroll
+// bar, which stays at the bottom while it is there, and stays put where the player left it.
+void DrawConsole(Frame& f, const ViewControl& c, const Rect& r) {
+    const ImVec2 a = Screen(f, r.x, r.y);
+    const ImVec2 b = Screen(f, r.x + r.w, r.y + r.h);
+    if (b.x - a.x < 1.0f || b.y - a.y < 1.0f) return;
+    Paint(f.draw, f.t.console_back, a, b, f.s);
+
+    const float bar = f.t.scroll_button * f.s;
+    const float inset = kConsoleInset * f.s;
+    const float line_h = kConsoleLine * f.s;
+    const ImVec2 ta(a.x + inset, a.y + inset);
+    const ImVec2 tb(b.x - bar - inset, b.y - inset);
+    const float width = std::max(1.0f, tb.x - ta.x);
+    const float height = std::max(0.0f, tb.y - ta.y);
+
+    ImFont* font = FontFor(false, f.t.console_face);
+    const float size = PointsToPixels(kConsolePoints) * f.s;
+
+    struct Visual {
+        size_t line;
+        std::vector<ConsoleRun> runs;
+    };
+    std::vector<Visual> visual;
+    for (size_t i = 0; i < c.lines.size(); ++i)
+        for (std::vector<ConsoleRun>& runs : WrapConsoleLine(font, size, c.lines[i], width))
+            visual.push_back(Visual{i, std::move(runs)});
+
+    // As HudConsole reckoned its scroll bar: the lines' height less the room and its insets.
+    const float total = static_cast<float>(visual.size()) * line_h;
+    const float range = std::max(0.0f, total - height - 2.0f * inset);
+    const std::string key = MemoryKey(c.name);
+    float& position = f.memory.scroll[key];
+    auto last = f.memory.console_max.find(key);
+    const bool at_bottom = last == f.memory.console_max.end() || position >= last->second - 0.5f;
+    if (at_bottom) position = range;
+    f.memory.console_max[key] = range;
+
+    if (ImGui::IsMouseHoveringRect(a, b) && ImGui::IsWindowHovered())
+        position -= ImGui::GetIO().MouseWheel * 20.0f * f.s;
+    position = std::clamp(position, 0.0f, range);
+
+    // From the bottom up: the newest line's foot at the room's foot while at the bottom.
+    const ImU32 halo = f.t.text_halo;
+    ImGui::PushClipRect(ImVec2(a.x, a.y), ImVec2(b.x - bar, b.y), true);
+    const float foot = tb.y + (range - position);
+    for (size_t k = 0; k < visual.size(); ++k) {
+        const float top = foot - static_cast<float>(visual.size() - k) * line_h;
+        if (top + line_h < a.y || top > b.y) continue;
+        const ConsoleLine& line = c.lines[visual[k].line];
+        for (size_t n = 0; n < visual[k].runs.size(); ++n) {
+            const ConsoleRun& run = visual[k].runs[n];
+            const ConsoleSegment& segment = line.segments[run.segment];
+            const ImVec2 at(ta.x + run.x, top);
+            HaloText(f.draw, font, size, at, ConsoleColour(f.t, segment.cls), halo, run.text);
+            if (segment.link && c.enabled) {
+                const ImVec2 end(at.x + Measure(font, size, run.text).x, at.y + line_h);
+                ImGui::PushID(static_cast<int>(k));
+                ImGui::PushID(static_cast<int>(n));
+                if (Hit("link", at, end))
+                    Emit(f, "click", c.name, std::to_string(run.segment), std::to_string(visual[k].line));
+                ImGui::PopID();
+                ImGui::PopID();
+            }
+        }
+    }
+    ImGui::PopClipRect();
+
+    // The scroll bar, always there, in whole lines; the room's height and the range are its rows.
+    const float rows_visible = std::max(1.0f, height / line_h);
+    const float rows_total = rows_visible + range / line_h;
+    const float rows = DrawScrollbar(f, ImVec2(b.x - bar, a.y), b, position / line_h, rows_visible, rows_total);
+    if (std::fabs(rows * line_h - position) >= 0.5f) position = std::clamp(rows * line_h, 0.0f, range);
+}
+
 void DrawNotebook(Frame& f, const ViewControl& c, const Rect& r) {
     if (c.pages.empty()) return;
 
@@ -1941,8 +2209,16 @@ void DrawControl(Frame& f, const ViewControl& c, const Rect& parent, int ordinal
         case ViewControlType::Slider: DrawSlider(f, c, r); break;
         case ViewControlType::List: DrawList(f, c, r); break;
         case ViewControlType::Progress: DrawProgress(f, c, r); break;
+        case ViewControlType::Picture: DrawPicture(f, c, r); break;
+        case ViewControlType::Console: DrawConsole(f, c, r); break;
         case ViewControlType::Unknown: break;
     }
+
+    // A tooltip the plugin gave the control, while the pointer rests on it - as VVS's
+    // TooltipSystem showed one over any control - in the theme's tooltip.
+    if (!c.tooltip.empty() && !ImGui::IsAnyItemActive() && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::IsMouseHoveringRect(Screen(f, r.x, r.y), Screen(f, r.x + r.w, r.y + r.h)))
+        ShowThemedTooltip(f.t, c.tooltip.c_str());
 
     if (faded) ImGui::PopStyleVar();
     ImGui::PopID();
@@ -2044,10 +2320,16 @@ void PaintPopupBack(const Fill& fill) {
     Paint(ImGui::GetWindowDrawList(), fill, ImVec2(at.x + 1.0f, at.y + 1.0f), ImVec2(at.x + size.x - 1.0f, at.y + size.y - 1.0f), kScale);
 }
 
-// A tooltip as the theme drew one: a one-pixel border, two pixels of padding, and the view's
-// own background, text colour and font shadow.
+// A tooltip as the theme drew one, for the item just drawn while the pointer rests on it.
 void ThemedTooltip(const Theme& t, const char* text) {
     if (text == nullptr || text[0] == '\0' || !ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
+    ShowThemedTooltip(t, text);
+}
+
+// A tooltip as the theme drew one: a one-pixel border, two pixels of padding, and the view's
+// own background, text colour and font shadow.
+void ShowThemedTooltip(const Theme& t, const char* text) {
+    if (text == nullptr || text[0] == '\0') return;
 
     // The Decal theme's parchment is only ever stood in for, as it was before the others; the
     // Minimalist themes' surfaces are painted as they are.
@@ -2082,8 +2364,10 @@ void ThemedTooltip(const Theme& t, const char* text) {
 // edge it was pushed to, as VVS's GhostSticky kept it there as the window or the screen
 // changed size. With `note`, the edges it touches now are remembered.
 ImVec2 KeepOnScreen(WindowMemory& memory, ImVec2 at, ImVec2 size, float border, float head, bool note = false) {
+    // As VVS's HudView kept a hudified view: its body no further left than the screen's edge,
+    // and no higher than four pixels from its top.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImVec2 lo(viewport->WorkPos.x - border, viewport->WorkPos.y - border - head);
+    const ImVec2 lo(viewport->WorkPos.x - border, viewport->WorkPos.y + kGhostTop - border - head);
     const ImVec2 hi(viewport->WorkPos.x + viewport->WorkSize.x - size.x + border,
                     viewport->WorkPos.y + viewport->WorkSize.y - size.y + border);
     ImVec2 kept(std::clamp(at.x, lo.x, std::max(lo.x, hi.x)), std::clamp(at.y, lo.y, std::max(lo.y, hi.y)));
@@ -2093,6 +2377,7 @@ ImVec2 KeepOnScreen(WindowMemory& memory, ImVec2 at, ImVec2 size, float border, 
         else if (kept.x >= hi.x) memory.stuck += "R";
         if (kept.y <= lo.y) memory.stuck += "T";
         else if (kept.y >= hi.y) memory.stuck += "B";
+        memory.stuck_known = true;
         ImGui::MarkIniSettingsDirty();
     }
 
@@ -2119,6 +2404,111 @@ bool GhostedOf(const WindowMemory& memory, const View& view) {
 
 bool ClickThroughOf(const WindowMemory& memory, const View& view) {
     return view.click_throughable && memory.click_through.value_or(view.click_through);
+}
+
+// Decal's ViewAlpha, from its registry: how opaque its own views were until the player changed
+// one. VVS's views started opaque.
+int g_view_alpha = kAlphaMax;
+
+int AlphaOf(const WindowMemory& memory, const View& view) {
+    if (memory.alpha >= 0) return memory.alpha;
+    return view.bar == "vvs" ? kAlphaMax : g_view_alpha;
+}
+
+// The size a window the player may resize is drawn at, in Decal pixels: what they gave it, or
+// what vvs.s3db said they left it at, or the plugin's own - whichever changed last - kept within
+// its least and most. The plugin is told with "resize" whenever that is not its own size, once
+// for each new size, as VVS raised its view's Resize.
+void SizeOf(WindowMemory& memory, const View& view, const std::string& owner, std::vector<Command>& commands, int& width, int& height) {
+    width = view.width;
+    height = view.height;
+    if (!view.resizeable) return;
+
+    if (!memory.has_size) {
+        memory.has_size = true;
+        memory.width = view.has_stored_size ? view.stored_width : view.width;
+        memory.height = view.has_stored_size ? view.stored_height : view.height;
+    } else if (memory.host_width >= 0 && (view.width != memory.host_width || view.height != memory.host_height) &&
+               !(view.width == memory.asked_width && view.height == memory.asked_height)) {
+        // The plugin gave its window a size of its own: that is its size now.
+        memory.width = view.width;
+        memory.height = view.height;
+    }
+    memory.host_width = view.width;
+    memory.host_height = view.height;
+
+    const int least_w = std::max(1, view.min_width);
+    const int least_h = std::max(1, view.min_height);
+    memory.width = std::max(memory.width, least_w);
+    memory.height = std::max(memory.height, least_h);
+    if (view.max_width > 0) memory.width = std::min(memory.width, std::max(least_w, view.max_width));
+    if (view.max_height > 0) memory.height = std::min(memory.height, std::max(least_h, view.max_height));
+
+    width = memory.width;
+    height = memory.height;
+    if ((width != view.width || height != view.height) && (width != memory.asked_width || height != memory.asked_height)) {
+        Command resize;
+        resize.name = "resize";
+        resize.owner = owner;
+        resize.value = std::to_string(width) + "," + std::to_string(height);
+        commands.push_back(std::move(resize));
+        memory.asked_width = width;
+        memory.asked_height = height;
+    }
+}
+
+// The frame of a window the player may resize, as VVS's HudView took a drag on it: each edge and
+// each corner moves its own sides, the far ones staying put, within the view's least and most.
+// Its new size is drawn from the next frame, and the plugin told then.
+void ResizeGrips(WindowMemory& memory, const View& view, ImVec2 wa, ImVec2 wb, float e, float s) {
+    if (e < 1.0f) return;
+    struct Grip {
+        const char* id;
+        ImVec2 a, b;
+        bool left, top, right, bottom;
+    };
+    const Grip grips[] = {
+        {"size-left", ImVec2(wa.x, wa.y + e), ImVec2(wa.x + e, wb.y - e), true, false, false, false},
+        {"size-right", ImVec2(wb.x - e, wa.y + e), ImVec2(wb.x, wb.y - e), false, false, true, false},
+        {"size-top", ImVec2(wa.x + e, wa.y), ImVec2(wb.x - e, wa.y + e), false, true, false, false},
+        {"size-bottom", ImVec2(wa.x + e, wb.y - e), ImVec2(wb.x - e, wb.y), false, false, false, true},
+        {"size-top-left", wa, ImVec2(wa.x + e, wa.y + e), true, true, false, false},
+        {"size-top-right", ImVec2(wb.x - e, wa.y), ImVec2(wb.x, wa.y + e), false, true, true, false},
+        {"size-bottom-left", ImVec2(wa.x, wb.y - e), ImVec2(wa.x + e, wb.y), true, false, false, true},
+        {"size-bottom-right", ImVec2(wb.x - e, wb.y - e), wb, false, false, true, true},
+    };
+
+    const int least_w = std::max(1, view.min_width);
+    const int least_h = std::max(1, view.min_height);
+    const int most_w = view.max_width > 0 ? std::max(least_w, view.max_width) : std::numeric_limits<int>::max();
+    const int most_h = view.max_height > 0 ? std::max(least_h, view.max_height) : std::numeric_limits<int>::max();
+    for (const Grip& grip : grips) {
+        Hit(grip.id, grip.a, grip.b);
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        if (ImGui::IsItemActivated()) {
+            memory.resize_mouse = mouse;
+            memory.resize_pos = wa;
+            memory.resize_width = memory.width;
+            memory.resize_height = memory.height;
+        }
+        if (ImGui::IsItemActive()) {
+            const int dx = static_cast<int>(std::lround((mouse.x - memory.resize_mouse.x) / s));
+            const int dy = static_cast<int>(std::lround((mouse.y - memory.resize_mouse.y) / s));
+            int w = memory.resize_width + (grip.right ? dx : grip.left ? -dx : 0);
+            int h = memory.resize_height + (grip.bottom ? dy : grip.top ? -dy : 0);
+            w = std::clamp(w, least_w, most_w);
+            h = std::clamp(h, least_h, most_h);
+            const ImVec2 at(grip.left ? memory.resize_pos.x - static_cast<float>(w - memory.resize_width) * s : memory.resize_pos.x,
+                            grip.top ? memory.resize_pos.y - static_cast<float>(h - memory.resize_height) * s : memory.resize_pos.y);
+            memory.width = w;
+            memory.height = h;
+            if (at.x != wa.x || at.y != wa.y) ImGui::SetWindowPos(at);
+        }
+        if (ImGui::IsItemDeactivated()) {
+            memory.size_chosen = true;
+            ImGui::MarkIniSettingsDirty();
+        }
+    }
 }
 
 // The first time in a session a window is hudified, VVS said how to get at it again - in the
@@ -2245,8 +2635,8 @@ void DrawWindowMenu(WindowMemory& memory, const View& view, const Theme& theme, 
         }
         if (view.minimizable && ImGui::MenuItem("Minimize")) open = false;
         if (theme.alpha_buttons && view.alpha_changeable) {
-            if (ImGui::MenuItem("Alpha Up")) memory.alpha = std::min(kAlphaMax, memory.alpha + kAlphaStep);
-            if (ImGui::MenuItem("Alpha Down")) memory.alpha = std::max(kAlphaMin, memory.alpha - kAlphaStep);
+            if (ImGui::MenuItem("Alpha Up")) memory.alpha = std::min(kAlphaMax, AlphaOf(memory, view) + kAlphaStep);
+            if (ImGui::MenuItem("Alpha Down")) memory.alpha = std::max(kAlphaMin, AlphaOf(memory, view) - kAlphaStep);
         }
         if (view.ghostable && ImGui::MenuItem("Toggle Ghost")) {
             memory.ghosted = !ghosted;
@@ -2304,14 +2694,21 @@ void DrawDecalWindow(const PluginWindow& window, size_t cascade, bool& open, std
     const bool click_through = ghosted && ClickThroughOf(memory, view);
 
     // A hudified window shows its frame, title and buttons only while left Ctrl is held;
-    // the rest of the time it is its body alone, and cannot be moved.
+    // the rest of the time it is its body alone, and cannot be moved. Until the player has moved
+    // it, it keeps to the edges vvs.s3db says it was left against.
     const bool chrome = !ghosted || g_reveal;
+    if (ghosted && !memory.stuck_known) memory.stuck = view.stuck;
+
+    // The view's size: the plugin's, or for a window the player may resize, the one it has now.
+    int view_width = view.width;
+    int view_height = view.height;
+    SizeOf(memory, view, window.owner, commands, view_width, view_height);
 
     // VVS's layout: the frame, the title bar with its rule under it, and the view.
     const float border = view.resizeable ? t.border_resizeable : t.border;
     const float head = t.title_bar + t.title_rule;
-    const float width = (static_cast<float>(std::max(view.width, 40)) + border * 2.0f) * s;
-    const float height = (static_cast<float>(std::max(view.height, 20)) + head + border * 2.0f) * s;
+    const float width = (static_cast<float>(std::max(view_width, 40)) + border * 2.0f) * s;
+    const float height = (static_cast<float>(std::max(view_height, 20)) + head + border * 2.0f) * s;
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float step = 32.0f * s * static_cast<float>(cascade);
@@ -2323,7 +2720,7 @@ void DrawDecalWindow(const PluginWindow& window, size_t cascade, bool& open, std
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, static_cast<float>(memory.alpha) / 255.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, static_cast<float>(AlphaOf(memory, view)) / 255.0f);
 
     // Moved by its title bar alone, as a Decal window was; ImGui would otherwise move it
     // from any empty spot, which on a window of parchment is everywhere. A hudified window
@@ -2384,10 +2781,10 @@ void DrawDecalWindow(const PluginWindow& window, size_t cascade, bool& open, std
             if (t.alpha_buttons && view.alpha_changeable) {
                 const ImVec2 up_at = next();
                 if (DrawTitleButton("alpha-up", t.alpha_up, up_at, button, "Alpha Up", t))
-                    memory.alpha = std::min(kAlphaMax, memory.alpha + kAlphaStep);
+                    memory.alpha = std::min(kAlphaMax, AlphaOf(memory, view) + kAlphaStep);
                 const ImVec2 down_at = next();
                 if (DrawTitleButton("alpha-down", t.alpha_down, down_at, button, "Alpha Down", t))
-                    memory.alpha = std::max(kAlphaMin, memory.alpha - kAlphaStep);
+                    memory.alpha = std::max(kAlphaMin, AlphaOf(memory, view) - kAlphaStep);
                 leftmost = down_at.x;
             }
             if (view.ghostable) {
@@ -2454,11 +2851,14 @@ void DrawDecalWindow(const PluginWindow& window, size_t cascade, bool& open, std
                 }
                 ImGui::SetWindowPos(moved);
             }
+
+            // Dragging its frame resizes a window the player may resize.
+            if (view.resizeable) ResizeGrips(memory, view, wa, wb, e, s);
         }
 
         // The view itself, under the title bar.
         Frame frame{window.owner, draw, body, s, commands, memory, t};
-        const Rect whole{0.0f, 0.0f, static_cast<float>(view.width), static_cast<float>(view.height)};
+        const Rect whole{0.0f, 0.0f, static_cast<float>(view_width), static_cast<float>(view_height)};
         ImGui::PushClipRect(frame.origin, ib, true);
         ImGui::PushID(window.owner.c_str());
         DrawControl(frame, view.root, whole, 0);
@@ -2497,19 +2897,33 @@ void RegisterDecalSettings() {
         else if (key == "Ghost") memory->ghosted = value == "1";
         else if (key == "ClickThrough") memory->click_through = value == "1";
         else if (key == "Alpha") memory->alpha = std::clamp(static_cast<int>(ParseNumber(value, kAlphaMax)), kAlphaMin, kAlphaMax);
-        else if (key == "Stuck") memory->stuck = value;
+        else if (key == "Stuck") {
+            memory->stuck = value;
+            memory->stuck_known = true;
+        } else if (key == "Size") {
+            const size_t comma = value.find(',');
+            const int w = comma == std::string::npos ? 0 : static_cast<int>(ParseNumber(value.substr(0, comma), 0.0));
+            const int h = comma == std::string::npos ? 0 : static_cast<int>(ParseNumber(value.substr(comma + 1), 0.0));
+            if (w > 0 && h > 0 && w <= 100000 && h <= 100000) {
+                memory->width = w;
+                memory->height = h;
+                memory->has_size = true;
+                memory->size_chosen = true;
+            }
+        }
     };
     handler.WriteAllFn = [](ImGuiContext*, ImGuiSettingsHandler* self, ImGuiTextBuffer* out) {
         for (const auto& [owner, memory] : Memory()) {
-            const bool any = !memory.theme.empty() || memory.ghosted.has_value() || memory.click_through.has_value() || memory.alpha != kAlphaMax
-                             || !memory.stuck.empty();
+            const bool any = !memory.theme.empty() || memory.ghosted.has_value() || memory.click_through.has_value() || memory.alpha >= 0
+                             || memory.stuck_known || memory.size_chosen;
             if (!any || owner.empty()) continue;
             out->appendf("[%s][%s]\n", self->TypeName, owner.c_str());
             if (!memory.theme.empty()) out->appendf("Theme=%s\n", memory.theme.c_str());
             if (memory.ghosted.has_value()) out->appendf("Ghost=%d\n", *memory.ghosted ? 1 : 0);
             if (memory.click_through.has_value()) out->appendf("ClickThrough=%d\n", *memory.click_through ? 1 : 0);
-            if (memory.alpha != kAlphaMax) out->appendf("Alpha=%d\n", memory.alpha);
-            if (!memory.stuck.empty()) out->appendf("Stuck=%s\n", memory.stuck.c_str());
+            if (memory.alpha >= 0) out->appendf("Alpha=%d\n", memory.alpha);
+            if (memory.stuck_known) out->appendf("Stuck=%s\n", memory.stuck.c_str());
+            if (memory.size_chosen) out->appendf("Size=%d,%d\n", memory.width, memory.height);
             out->append("\n");
         }
     };
@@ -2524,8 +2938,20 @@ DecalWindowLook DescribeDecalWindow(const std::string& owner, const View& view) 
     look.theme = ThemeOf(memory, view).name;
     look.ghosted = GhostedOf(memory, view);
     look.click_through = look.ghosted && ClickThroughOf(memory, view);
-    look.alpha = memory.alpha;
+    look.alpha = AlphaOf(memory, view);
+    look.width = memory.has_size ? memory.width : view.width;
+    look.height = memory.has_size ? memory.height : view.height;
+    look.stuck = memory.stuck_known ? memory.stuck : view.stuck;
     return look;
+}
+
+void SetDecalViewAlpha(int alpha) { g_view_alpha = std::clamp(alpha, 0, kAlphaMax); }
+
+void KeepVvsBarOnScreen(bool moved, const std::string* stored) {
+    WindowMemory& memory = Memory()[kVvsBarOwner];
+    if (!memory.stuck_known) memory.stuck = stored != nullptr ? *stored : "L";
+    if (moved) memory.stuck.clear();
+    KeepOnScreen(memory, ImGui::GetWindowPos(), ImGui::GetWindowSize(), 0.0f, 0.0f, moved);
 }
 
 void EndDecalFrame() {
@@ -2613,10 +3039,12 @@ bool ClickOrDrag(const char* id, ImVec2 size, bool& hovered, bool& held, BarDrag
 
 }  // namespace
 
-bool DecalBarGrip(const char* id, const char* tooltip, bool vertical, BarDrag drag) {
-    // Two bars, as Decal drew them at each end of its bar: a pale face and a darker edge,
-    // upright on a bar across the top and lying down on one down a side.
-    const ImVec2 size = vertical ? ImVec2(18.0f, 6.0f) : ImVec2(6.0f, 18.0f);
+bool DecalBarGrip(const char* id, const char* tooltip, bool vertical, BarDrag drag, float span) {
+    // Two bars, as cBarLayer drew them at each end of its bar (its drawing at 0x1852C8A0): four
+    // lines a pixel thick, `span` long - light, dark, a pixel's gap, light, dark - upright on a bar
+    // across the top and lying down on one down a side. The colours are its COLORREFs 0x8CADD6
+    // and 0x3952A5. The item is a pixel bigger every way, for the hand.
+    const ImVec2 size = vertical ? ImVec2(span + 2.0f, 7.0f) : ImVec2(7.0f, span + 2.0f);
     const ImVec2 a = ImGui::GetCursorScreenPos();
 
     bool hovered = false;
@@ -2625,17 +3053,15 @@ bool DecalBarGrip(const char* id, const char* tooltip, bool vertical, BarDrag dr
     if (!held) ThemedTooltip(kDecalTheme, tooltip);
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
-    const ImU32 face = IM_COL32(0xE6, 0xC2, 0xB4, 0xFF);
-    const ImU32 edge = IM_COL32(0x9A, 0x6A, 0x5E, 0xFF);
-    for (int bar = 0; bar < 2; ++bar) {
-        const float o = 1.0f + bar * 3.0f;
-        if (!vertical) {
-            draw->AddRectFilled(ImVec2(a.x + o, a.y + 2.0f), ImVec2(a.x + o + 1.0f, a.y + size.y - 2.0f), Col(face));
-            draw->AddRectFilled(ImVec2(a.x + o + 1.0f, a.y + 2.0f), ImVec2(a.x + o + 2.0f, a.y + size.y - 2.0f), Col(edge));
-        } else {
-            draw->AddRectFilled(ImVec2(a.x + 2.0f, a.y + o), ImVec2(a.x + size.x - 2.0f, a.y + o + 1.0f), Col(face));
-            draw->AddRectFilled(ImVec2(a.x + 2.0f, a.y + o + 1.0f), ImVec2(a.x + size.x - 2.0f, a.y + o + 2.0f), Col(edge));
-        }
+    const ImU32 light = IM_COL32(0xD6, 0xAD, 0x8C, 0xFF);
+    const ImU32 dark = IM_COL32(0xA5, 0x52, 0x39, 0xFF);
+    const float at[4] = {1.0f, 2.0f, 4.0f, 5.0f};
+    for (int line = 0; line < 4; ++line) {
+        const ImU32 colour = line % 2 == 0 ? light : dark;
+        if (!vertical)
+            draw->AddRectFilled(ImVec2(a.x + at[line], a.y + 1.0f), ImVec2(a.x + at[line] + 1.0f, a.y + 1.0f + span), Col(colour));
+        else
+            draw->AddRectFilled(ImVec2(a.x + 1.0f, a.y + at[line]), ImVec2(a.x + 1.0f + span, a.y + at[line] + 1.0f), Col(colour));
     }
 
     return clicked;
@@ -2655,20 +3081,20 @@ bool DecalBarButton(const char* id, const char* up, const char* down, const char
     return clicked;
 }
 
-bool DecalIconSwitch(const char* id, const std::string& icon, SwitchLook look, const char* tooltip) {
-    const float size = 18.0f;
+bool DecalIconSwitch(const char* id, const std::string& icon, SwitchLook look, const char* tooltip, ImVec2 size) {
     const ImVec2 a = ImGui::GetCursorScreenPos();
-    const ImVec2 b(a.x + size, a.y + size);
+    const ImVec2 b(a.x + size.x, a.y + size.y);
 
     bool hovered = false;
     bool held = false;
-    const bool clicked = ClickOrDrag(id, ImVec2(size, size), hovered, held, BarDrag::None);
+    const bool clicked = ClickOrDrag(id, size, hovered, held, BarDrag::None);
     if (!held) ThemedTooltip(kDecalTheme, tooltip);
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
 
-    // A square from the middle of Decal's switch bitmap: 100 by 20 for the gold and red, the
-    // grey one a 64-wide tab whose ends are the cyan Decal keyed out.
+    // A piece from the middle of Decal's switch bitmap, as wide as the switch inside its edge:
+    // 100 by 20 for the gold and red, the grey one a 64-wide tab whose ends are the cyan Decal
+    // keyed out.
     const char* key = look == SwitchLook::Open ? kSwitchActiveTexture
                     : look == SwitchLook::Closed ? kSwitchInactiveTexture
                                                  : kSwitchDisabledTexture;
@@ -2676,9 +3102,9 @@ bool DecalIconSwitch(const char* id, const std::string& icon, SwitchLook look, c
     const ImVec2 inner_b(b.x - 1.0f, b.y - 1.0f);
     if (const Texture* tex = FindTexture(key); tex != nullptr && tex->width > 0.0f) {
         const float u0 = look == SwitchLook::Faulted ? 24.0f / tex->width : 40.0f / tex->width;
-        const float u1 = u0 + 16.0f / tex->width;
+        const float u1 = std::min(1.0f, u0 + std::max(1.0f, size.x - 2.0f) / tex->width);
         const ImU32 tint = Col(hovered && !held ? IM_COL32(255, 255, 225, 255) : IM_COL32_WHITE);
-        draw->AddImage(tex->ref, inner_a, inner_b, ImVec2(u0, 2.0f / 20.0f), ImVec2(u1, 18.0f / 20.0f), tint);
+        draw->AddImage(tex->ref, inner_a, inner_b, ImVec2(u0, 0.0f), ImVec2(u1, 1.0f), tint);
     } else {
         const ImU32 fill = look == SwitchLook::Open ? IM_COL32(0xB4, 0x7E, 0x2B, 255)
                          : look == SwitchLook::Closed ? IM_COL32(0x8A, 0x3A, 0x22, 255)
@@ -2688,15 +3114,16 @@ bool DecalIconSwitch(const char* id, const std::string& icon, SwitchLook look, c
 
     draw->AddRect(a, b, Col(IM_COL32(0x10, 0x0C, 0x08, 0xFF)));
 
-    if (const Texture* tex = FindTexture(icon)) DrawImage(draw, tex, inner_a, inner_b);
+    // The plugin's icon, sixteen pixels square in the middle of the switch.
+    const ImVec2 icon_a(a.x + std::floor((size.x - 16.0f) * 0.5f), a.y + std::floor((size.y - 16.0f) * 0.5f));
+    if (const Texture* tex = FindTexture(icon)) DrawImage(draw, tex, icon_a, ImVec2(icon_a.x + 16.0f, icon_a.y + 16.0f));
     return clicked;
 }
 
 bool DecalLabelSwitch(const char* id, const std::string& label, const std::string& icon, SwitchLook look, float width,
-                      const char* tooltip) {
+                      const char* tooltip, float h) {
     // Decal's switch in its expanded form: the whole switch bitmap - gold open, red closed -
-    // stretched to its width and 20 high, the plugin's icon at its left and its name after.
-    const float h = 20.0f;
+    // stretched to its width and height, the plugin's icon at its left and its name after.
     const ImVec2 a = ImGui::GetCursorScreenPos();
     const ImVec2 b(a.x + width, a.y + h);
 

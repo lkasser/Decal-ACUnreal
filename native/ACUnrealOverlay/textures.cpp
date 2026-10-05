@@ -306,6 +306,16 @@ bool LoadDecalFonts(ImFontAtlas* atlas) {
     if (Fonts().bold == nullptr)
         Fonts().bold = load(L"timesbd.ttf");
 
+    Fonts().verdana = AddGdiFont(atlas, "Verdana", FW_NORMAL);
+    Fonts().verdana_bold = AddGdiFont(atlas, "Verdana", FW_BOLD);
+    Fonts().palatino = AddGdiFont(atlas, "Palatino Linotype", FW_NORMAL);
+    if (Fonts().verdana == nullptr)
+        Fonts().verdana = load(L"verdana.ttf");
+    if (Fonts().verdana_bold == nullptr)
+        Fonts().verdana_bold = load(L"verdanab.ttf");
+    if (Fonts().palatino == nullptr)
+        Fonts().palatino = load(L"pala.ttf");
+
     return Fonts().regular != nullptr && Fonts().bold != nullptr;
 }
 

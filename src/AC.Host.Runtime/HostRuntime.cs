@@ -69,6 +69,15 @@ namespace AC.Host.Runtime
                 Cells = Portal != null ? OpenCellData(Portal.Path, log) : null;
                 World.Cells = Cells;
 
+                // The ground, walls and objects a plugin tests a projectile's path against, read
+                // from the same two archives on workers as places are first needed.
+                if (Portal != null && Cells != null)
+                {
+                    ArchiveGeometry geometry = new ArchiveGeometry(AC.Dat.Geometry.WorldGeometry.Open(Portal, Cells), World);
+                    geometry.ReadFailed += (_, ex) => log.Warn($"Could not read the world's geometry: {ex.Message}");
+                    World.Geometry = geometry;
+                }
+
                 Host = new GameHost(Transport, log, options.Settings, options.DataDirectory, World);
                 Host.ActionsAllowed = options.EnableActions;
 

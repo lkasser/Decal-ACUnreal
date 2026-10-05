@@ -23,10 +23,11 @@ namespace AC.Host.Overlay
 
         private readonly IReadOnlyDictionary<string, VirindiStoredView> _stored;
 
-        public ViewLooks(string defaultTheme, IReadOnlyDictionary<string, VirindiStoredView> stored)
+        public ViewLooks(string defaultTheme, IReadOnlyDictionary<string, VirindiStoredView> stored, IReadOnlyDictionary<string, long> extraInfo = null)
         {
             DefaultTheme = string.IsNullOrWhiteSpace(defaultTheme) ? VirindiViewStore.DefaultTheme(null, null) : defaultTheme;
             _stored = stored ?? new Dictionary<string, VirindiStoredView>();
+            VvsBar = BarFrom(_stored, extraInfo);
         }
 
         /// <summary>VVS's default theme, for a VVS window the player never picked one for.</summary>
@@ -34,6 +35,33 @@ namespace AC.Host.Overlay
 
         /// <summary>How many windows the player's store remembers.</summary>
         public int StoredCount => _stored.Count;
+
+        /// <summary>
+        /// The VVS bar as the store left it: its own row, read as VVS read a hudified view's - where
+        /// and against which edges - and ExtraInfo's VVSBarHorizontal. Null when the store has neither.
+        /// </summary>
+        public OverlayVvsBar VvsBar { get; }
+
+        private static OverlayVvsBar BarFrom(IReadOnlyDictionary<string, VirindiStoredView> stored, IReadOnlyDictionary<string, long> extraInfo)
+        {
+            OverlayVvsBar bar = new OverlayVvsBar();
+            bool any = false;
+            if (stored.TryGetValue(VirindiViewStore.BarKey, out VirindiStoredView row) && row.Ghosted)
+            {
+                bar.X = row.X;
+                bar.Y = row.Y;
+                bar.Stuck = row.StuckEdges;
+                any = true;
+            }
+
+            if (extraInfo != null && extraInfo.TryGetValue("VVSBarHorizontal", out long horizontal))
+            {
+                bar.Horizontal = horizontal != 0;
+                any = true;
+            }
+
+            return any ? bar : null;
+        }
 
         /// <summary>
         /// Reads VVS's registry settings and store, beside the given VirindiViewService.dll or
@@ -59,8 +87,14 @@ namespace AC.Host.Overlay
                 return new ViewLooks(defaultTheme, null);
             }
 
+            if (!VirindiViewStore.TryReadExtraInfo(file, out IReadOnlyDictionary<string, long> extra, out error))
+            {
+                log?.Invoke($"Virindi View Service's store {file} has an ExtraInfo table that could not be read ({error}), so the VVS bar keeps its own orientation.");
+                extra = null;
+            }
+
             log?.Invoke($"Read {stored.Count} windows from Virindi View Service's store {file}; its default theme is {defaultTheme}. The file is only read.");
-            return new ViewLooks(defaultTheme, stored);
+            return new ViewLooks(defaultTheme, stored, extra);
         }
 
         /// <summary>Fills in how a view starts, over what the plugin said.</summary>
@@ -85,8 +119,20 @@ namespace AC.Host.Overlay
             dto.ClickThrough = view.ClickThroughable && stored.ClickThrough;
             if (dto.Ghosted)
             {
+                // As VVS's LoadUserSettings: a hudified window goes back where it was left, and
+                // against the edges it was left against.
                 dto.X = stored.X;
                 dto.Y = stored.Y;
+                string stuck = stored.StuckEdges;
+                dto.Stuck = stuck.Length > 0 ? stuck : null;
+            }
+
+            // And a window the player may resize opens at the size they left it, kept within
+            // what the plugin allows.
+            if (view.Resizeable && stored.Width > 0 && stored.Height > 0)
+            {
+                dto.StoredWidth = Math.Min(Math.Max(stored.Width, view.MinWidth), Math.Max(view.MinWidth, view.MaxWidth));
+                dto.StoredHeight = Math.Min(Math.Max(stored.Height, view.MinHeight), Math.Max(view.MinHeight, view.MaxHeight));
             }
         }
     }

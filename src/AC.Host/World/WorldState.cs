@@ -34,6 +34,13 @@ namespace AC.Host.World
 
         /// <summary>The account's characters, in the character list's order. Empty before it has come.</summary>
         IReadOnlyList<AccountCharacter> AccountCharacters { get; }
+
+        /// <summary>
+        /// The world's solid geometry - ground, walls, buildings, the client's own objects - for
+        /// telling whether a projectile would reach its target; null when the host has no client
+        /// archives to read it from.
+        /// </summary>
+        IWorldGeometry Geometry => null;
     }
 
     /// <summary>One of the account's characters, as the character list names it.</summary>

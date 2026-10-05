@@ -204,8 +204,9 @@ struct Arrangement {
     float bar_side_y = -1.0f;
     size_t bar_scroll = 0;
 
-    // VVS's bar across the screen rather than down it, as its blue arrow sets.
-    bool vvs_horizontal = false;
+    // VVS's bar across the screen rather than down it, as its blue arrow sets: -1 until the
+    // player turns it, and then what they chose.
+    int vvs_horizontal = -1;
 
     // A plugin with no entry is open. That is what makes the first frame a full set of
     // windows rather than an empty bar, without anything having to enumerate the plugins
@@ -252,17 +253,17 @@ void RegisterOverlaySettings()
         if (std::sscanf(line, "State=%d", &value) == 1) arrangement->bar_state = value == 0 ? 0 : 1;
         else if (std::sscanf(line, "Dock=%d", &value) == 1) arrangement->bar_dock = std::clamp(value, 0, 2);
         else if (std::sscanf(line, "Length=%d", &value) == 1) arrangement->bar_length = std::max(112, value);
-        else if (std::sscanf(line, "VvsHorizontal=%d", &value) == 1) arrangement->vvs_horizontal = value != 0;
+        else if (std::sscanf(line, "VvsHorizontal=%d", &value) == 1) arrangement->vvs_horizontal = value != 0 ? 1 : 0;
     };
     handler.WriteAllFn = [](ImGuiContext*, ImGuiSettingsHandler* self, ImGuiTextBuffer* out) {
         const Arrangement& arrangement = TheArrangement();
-        if (arrangement.bar_state < 0 && arrangement.bar_dock < 0 && arrangement.bar_length < 0 && !arrangement.vvs_horizontal)
+        if (arrangement.bar_state < 0 && arrangement.bar_dock < 0 && arrangement.bar_length < 0 && arrangement.vvs_horizontal < 0)
             return;
         out->appendf("[%s][Bar]\n", self->TypeName);
         if (arrangement.bar_state >= 0) out->appendf("State=%d\n", arrangement.bar_state);
         if (arrangement.bar_dock >= 0) out->appendf("Dock=%d\n", arrangement.bar_dock);
         if (arrangement.bar_length > 0) out->appendf("Length=%d\n", arrangement.bar_length);
-        if (arrangement.vvs_horizontal) out->appendf("VvsHorizontal=1\n");
+        if (arrangement.vvs_horizontal >= 0) out->appendf("VvsHorizontal=%d\n", arrangement.vvs_horizontal);
         out->append("\n");
     };
     ImGui::AddSettingsHandler(&handler);
@@ -1220,14 +1221,12 @@ struct BarLayout {
     float length = 250.0f;
 };
 
-// How far apart expanded switches are along a bar across the top: each is 100 pixels.
-constexpr float kExpandedSwitch = 102.0f;
-
 BarLayout LayoutOf(const State& state, const Arrangement& arrangement)
 {
     BarLayout layout;
     const DecalBarSettings& saved = state.decal_bar;
-    layout.compact = arrangement.bar_state >= 0 ? arrangement.bar_state == 1 : !saved.known || saved.state != 0;
+    // Decal's own default with nothing in its registry is BarState 0: expanded.
+    layout.compact = arrangement.bar_state >= 0 ? arrangement.bar_state == 1 : saved.known && saved.state != 0;
     layout.dock = arrangement.bar_dock >= 0 ? arrangement.bar_dock : saved.known ? saved.dock : 0;
     const int length = arrangement.bar_length > 0 ? arrangement.bar_length : saved.known ? saved.length : 250;
     layout.length = static_cast<float>(std::max(112, length));
@@ -1302,7 +1301,11 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
 {
     BarLayout layout = LayoutOf(state, arrangement);
     const bool vertical = layout.dock != 0;
-    const float thickness = vertical ? (layout.compact ? 20.0f : 100.0f) : 23.0f;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    // Inject.dll's expanded width: a hundred pixels, or eighty on a screen no wider than 1024.
+    const float expanded = viewport->Size.x > 1024.0f ? 100.0f : 80.0f;
+    const float thickness = vertical ? (layout.compact ? 20.0f : expanded) : 23.0f;
 
     // The switches: the plugins on Decal's bar, in the host's order.
     std::vector<const OwnerGroup*> switches;
@@ -1314,19 +1317,25 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
             switches.push_back(&group);
     }
 
+    // Each switch's own extent along the bar, and the two pixels after it, as Inject.dll laid
+    // them: across the top 20 wide compact and the expanded width labelled, 21 high; down a side
+    // 20 high, 18 wide compact and two less than the bar labelled.
+    const float switch_w = vertical ? (layout.compact ? 18.0f : expanded - 2.0f) : (layout.compact ? 20.0f : expanded);
+    const float switch_h = vertical ? 20.0f : 21.0f;
+    const float each = (vertical ? switch_h : switch_w) + 2.0f;
+
     // An expanded switch is a hundred pixels: across the top, a bar shorter than one switch
     // and its ends - the player's compact length, say - is lengthened to show one whole, with
     // the pager's arrows when more than one does not fit. Nothing on it is drawn cut off.
     if (!vertical && !layout.compact)
     {
-        const float one = 64.0f + kExpandedSwitch;
-        const bool overflows = static_cast<float>(switches.size()) * kExpandedSwitch > layout.length - 64.0f;
-        layout.length = std::max(layout.length, overflows && switches.size() > 1 ? one + 36.0f : one);
+        const float one = 58.0f + each;
+        const bool overflows = static_cast<float>(switches.size()) * each > layout.length - 58.0f;
+        layout.length = std::max(layout.length, overflows && switches.size() > 1 ? one + 40.0f : one);
     }
 
     const ImVec2 size = vertical ? ImVec2(thickness, layout.length) : ImVec2(layout.length, thickness);
 
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const char* name = layout.dock == 0 ? "###decalbar" : layout.dock == 1 ? "###decalbar-left" : "###decalbar-right";
     if (!vertical)
     {
@@ -1353,6 +1362,10 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, 1.0f));
 
+    // BarAlpha, from Decal's registry: the whole bar as opaque as Inject.dll's layer was made.
+    const float bar_alpha = state.decal_bar.known ? static_cast<float>(std::clamp(state.decal_bar.alpha, 0, 255)) / 255.0f : 1.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * bar_alpha);
+
     ImVec2 bar_pos = viewport->WorkPos;
     if (ImGui::Begin(name, nullptr, flags))
     {
@@ -1364,14 +1377,32 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
         const BarDrag drag = vertical ? BarDrag::Down : BarDrag::Free;
         const char* first_tip = "Drag to move Decal's bar. Ctrl+click for the host's status.";
         const char* second_tip = "Drag to move Decal's bar. Ctrl+click for the Decal window.";
+        const float length = layout.length;
+
+        // The grips, as cBarLayer drew them: four lines a pixel thick, light, dark, a gap, light,
+        // dark - at 3 to 7 from the start and 8 to 4 from the end; across the top fifteen pixels
+        // long from 4 down, down a side from 4 across to four short of the far side.
+        const float span = vertical ? thickness - 8.0f : 15.0f;
 
         // The first grip, at the start.
-        ImGui::SetCursorPos(vertical ? ImVec2(1.0f, 0.0f) : ImVec2(0.0f, 2.0f));
-        if (DecalBarGrip("grip-start", first_tip, vertical, drag) && ImGui::GetIO().KeyCtrl)
+        ImGui::SetCursorPos(vertical ? ImVec2(3.0f, 2.0f) : ImVec2(2.0f, 3.0f));
+        if (DecalBarGrip("grip-start", first_tip, vertical, drag, span) && ImGui::GetIO().KeyCtrl)
             arrangement.open[std::string()] = !IsOpen(arrangement, std::string());
 
+        // Where Inject.dll put the gold square and the grey one (its layout at 0x1852BF40): along
+        // the top, the gold at (12, 3) and the grey 28 from the end; down a side compact, at 12
+        // and 28 from the end; down a side expanded, both on the top row at 12 down - the gold on
+        // the side the bar is docked to, the grey on the other.
+        const float far = thickness - 19.0f;
+        const ImVec2 minmax_at = !vertical ? ImVec2(12.0f, 3.0f)
+                                 : layout.compact ? ImVec2(3.0f, 12.0f)
+                                 : ImVec2(layout.dock == 1 ? 3.0f : far, 12.0f);
+        const ImVec2 dock_at = !vertical ? ImVec2(length - 28.0f, 3.0f)
+                               : layout.compact ? ImVec2(3.0f, length - 28.0f)
+                               : ImVec2(layout.dock == 1 ? far : 3.0f, 12.0f);
+
         // The gold square: compact or expanded.
-        ImGui::SetCursorPos(vertical ? ImVec2(2.0f, 12.0f) : ImVec2(12.0f, 3.0f));
+        ImGui::SetCursorPos(minmax_at);
         if (DecalBarButton("minmax", layout.compact ? "portal:06005E64" : "portal:06005E65",
                            layout.compact ? "portal:06005E65" : "portal:06005E64",
                            layout.compact ? "Show the switches with their names" : "Show the switches as icons"))
@@ -1380,25 +1411,35 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
             ImGui::MarkIniSettingsDirty();
         }
 
-        const float each = vertical ? 22.0f : layout.compact ? 20.0f : kExpandedSwitch;
-        const float area_start = 32.0f;
-        const float area_end = layout.length - 32.0f;
-        const float room = std::max(0.0f, area_end - area_start);
-        const bool paged = static_cast<float>(switches.size()) * each > room;
-        const float list_start = paged ? area_start + 18.0f : area_start;
-        const float list_room = paged ? std::max(each, room - 36.0f) : room;
-        const size_t fits = std::max<size_t>(1, static_cast<size_t>(list_room / each));
+        // The switches' strip: from 30 to 28 short of the end, or between the pager's arrows,
+        // 50 to 48 short, once they take more than that; down an expanded side, from 30 to 12
+        // short of the end whether paged or not, the arrows being on the top row.
+        const bool side_expanded = vertical && !layout.compact;
+        const float total = static_cast<float>(switches.size()) * each;
+        const bool paged = total > length - (side_expanded ? 44.0f : 58.0f);
+        const float list_start = paged && !side_expanded ? 50.0f : 30.0f;
+        const float list_end = side_expanded ? length - 12.0f : paged ? length - 48.0f : length - 28.0f;
+        const float list_room = std::max(0.0f, list_end - list_start);
+        const size_t fits = std::max<size_t>(1, static_cast<size_t>((list_room + 2.0f) / each));
         const size_t most_first = switches.size() > fits ? switches.size() - fits : 0;
         arrangement.bar_scroll = std::min(arrangement.bar_scroll, most_first);
 
         if (paged)
         {
-            // Decal's pager: gold arrows across the top, green triangles down a side.
-            ImGui::SetCursorPos(vertical ? ImVec2(2.0f, area_start) : ImVec2(area_start, 3.0f));
+            // Decal's pager: gold arrows across the top, green triangles down a side - the arrows
+            // at either end of the strip, or on an expanded side's top row either side of its
+            // middle.
+            const ImVec2 back_at = !vertical ? ImVec2(30.0f, 3.0f)
+                                   : layout.compact ? ImVec2(3.0f, 30.0f)
+                                   : ImVec2(std::floor(thickness / 2.0f) - 17.0f, 12.0f);
+            const ImVec2 on_at = !vertical ? ImVec2(length - 46.0f, 3.0f)
+                                 : layout.compact ? ImVec2(3.0f, length - 46.0f)
+                                 : ImVec2(std::floor(thickness / 2.0f) + 1.0f, 12.0f);
+            ImGui::SetCursorPos(back_at);
             if (DecalBarButton("page-back", vertical ? "portal:060012B2" : "portal:06004C7B", vertical ? "portal:060012B2" : "portal:06004C79", "")
                 && arrangement.bar_scroll > 0)
                 --arrangement.bar_scroll;
-            ImGui::SetCursorPos(vertical ? ImVec2(2.0f, area_end - 16.0f) : ImVec2(area_end - 16.0f, 3.0f));
+            ImGui::SetCursorPos(on_at);
             if (DecalBarButton("page-on", vertical ? "portal:060012B1" : "portal:06004C7E", vertical ? "portal:060012B1" : "portal:06004C7C", "")
                 && arrangement.bar_scroll < most_first)
                 ++arrangement.bar_scroll;
@@ -1408,7 +1449,7 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
         {
             const OwnerGroup& group = *switches[i];
             const float along = list_start + static_cast<float>(shown) * each;
-            ImGui::SetCursorPos(vertical ? ImVec2(1.0f, along) : ImVec2(along, layout.compact ? 2.0f : 1.0f));
+            ImGui::SetCursorPos(vertical ? ImVec2(1.0f, along) : ImVec2(along, 1.0f));
 
             const SwitchLook look = LookOf(group, arrangement);
             const std::string label = ShownName(group);
@@ -1417,8 +1458,8 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
             // Spelt with the owner, so a plugin called "Host" has its own switch.
             const std::string id = "owner:" + group.owner;
             const bool clicked = layout.compact
-                                     ? DecalIconSwitch(id.c_str(), IconOf(group), look, tip.c_str())
-                                     : DecalLabelSwitch(id.c_str(), label, IconOf(group), look, vertical ? 98.0f : 100.0f, tip.c_str());
+                                     ? DecalIconSwitch(id.c_str(), IconOf(group), look, tip.c_str(), ImVec2(switch_w, switch_h))
+                                     : DecalLabelSwitch(id.c_str(), label, IconOf(group), look, switch_w, tip.c_str(), switch_h);
             if (clicked)
                 arrangement.open[group.owner] = !IsOpen(arrangement, group.owner, group.window != nullptr && group.window->starts_closed);
         }
@@ -1426,7 +1467,7 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
         (void)owners_dropped;
 
         // The grey square: docks the bar to the next edge.
-        ImGui::SetCursorPos(vertical ? ImVec2(2.0f, layout.length - 28.0f) : ImVec2(layout.length - 28.0f, 3.0f));
+        ImGui::SetCursorPos(dock_at);
         if (DecalBarButton("dock", "portal:060012AA", "portal:060012A9",
                            layout.dock == 0 ? "Dock the bar on the left" : layout.dock == 1 ? "Dock the bar on the right" : "Dock the bar along the top"))
         {
@@ -1436,8 +1477,8 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
         }
 
         // The second grip, at the end.
-        ImGui::SetCursorPos(vertical ? ImVec2(1.0f, layout.length - 7.0f) : ImVec2(layout.length - 7.0f, 2.0f));
-        if (DecalBarGrip("grip-end", second_tip, vertical, drag) && ImGui::GetIO().KeyCtrl)
+        ImGui::SetCursorPos(vertical ? ImVec2(3.0f, length - 9.0f) : ImVec2(length - 9.0f, 3.0f));
+        if (DecalBarGrip("grip-end", second_tip, vertical, drag, span) && ImGui::GetIO().KeyCtrl)
         {
             for (const OwnerGroup& group : groups)
             {
@@ -1452,7 +1493,7 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
     }
 
     ImGui::End();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 
     DrawBarStatus(state, stale, vertical ? ImVec2(bar_pos.x + (layout.dock == 1 ? thickness + 2.0f : -160.0f), bar_pos.y)
                                          : ImVec2(bar_pos.x + layout.length + 4.0f, bar_pos.y + 3.0f));
@@ -1462,7 +1503,7 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
 // screen, "ab" first - which steps VVS's primary theme on - and a rule between one plugin's
 // views and the next's, in the theme's colours. A click opens or closes a view's window; the
 // bar moves only while left Ctrl is held, as a hudified VVS window did.
-void DrawVvsBar(const std::vector<OwnerGroup>& groups, Arrangement& arrangement)
+void DrawVvsBar(const State& state, const std::vector<OwnerGroup>& groups, Arrangement& arrangement)
 {
     // Grouped as VVS grouped them - by the plugin that made the view - in the order each
     // plugin first appears.
@@ -1497,8 +1538,13 @@ void DrawVvsBar(const std::vector<OwnerGroup>& groups, Arrangement& arrangement)
     };
     std::stable_sort(byGroup.begin(), byGroup.end(), [&](const auto& a, const auto& b) { return order(a.second) < order(b.second); });
 
+    // Where VVS put it, (0, 52), or where the player left it in the standard client - its
+    // "VirindiViewService:VVS Bar" row in vvs.s3db - until it is moved here.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + 52.0f), ImGuiCond_FirstUseEver);
+    const VvsBarSettings& stored = state.vvs_bar;
+    ImGui::SetNextWindowPos(stored.has_position ? ImVec2(viewport->Pos.x + static_cast<float>(stored.x), viewport->Pos.y + static_cast<float>(stored.y))
+                                                : ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + 52.0f),
+                            ImGuiCond_FirstUseEver);
 
     const ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
@@ -1516,14 +1562,17 @@ void DrawVvsBar(const std::vector<OwnerGroup>& groups, Arrangement& arrangement)
         if (GImGui->OpenPopupStack.Size == 0)
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
 
+        const ImVec2 was = ImGui::GetWindowPos();
         const bool movable = DecalRevealHeld();
-        const bool across = arrangement.vvs_horizontal;
+
+        // Down the side, unless the player turned it here or VVS's ExtraInfo says it was across.
+        const bool across = arrangement.vvs_horizontal >= 0 ? arrangement.vvs_horizontal == 1 : stored.has_horizontal && stored.horizontal;
 
         // The bar is a hudified VVS window: with left Ctrl held its title strip shows - its
         // coral box, and the blue arrow that turns it between down the side and across.
         if (VvsBarBox(across, movable))
         {
-            arrangement.vvs_horizontal = !across;
+            arrangement.vvs_horizontal = across ? 0 : 1;
             ImGui::MarkIniSettingsDirty();
         }
         if (movable)
@@ -1540,7 +1589,7 @@ void DrawVvsBar(const std::vector<OwnerGroup>& groups, Arrangement& arrangement)
                                across ? "vvs:HudBar.bluearrow_right_down.png" : "vvs:HudBar.bluearrow_down_down.png",
                                across ? "Set Vertical" : "Set Horizontal"))
             {
-                arrangement.vvs_horizontal = !across;
+                arrangement.vvs_horizontal = across ? 0 : 1;
                 ImGui::MarkIniSettingsDirty();
             }
             if (across)
@@ -1568,6 +1617,11 @@ void DrawVvsBar(const std::vector<OwnerGroup>& groups, Arrangement& arrangement)
                     arrangement.open[group->owner] = !open;
             }
         }
+
+        // On screen, and against the edge it was left at - the left, as VVS made it - until moved;
+        // moved, against whichever edges it was pushed to, as any hudified view.
+        const ImVec2 now = ImGui::GetWindowPos();
+        KeepVvsBarOnScreen(now.x != was.x || now.y != was.y, stored.has_stuck ? &stored.stuck : nullptr);
 
         // While left Ctrl shows a hudified window's frame, the bar shows it can be moved.
         if (movable)
@@ -1801,8 +1855,9 @@ std::vector<Command> DrawOverlay(const State& state, bool& visible)
     }
 
     SetDecalDefaultTheme(state.default_theme);
+    SetDecalViewAlpha(state.decal_bar.known ? state.decal_bar.view_alpha : 255);
     DrawBar(state, groups, owners_dropped, stale, arrangement);
-    DrawVvsBar(groups, arrangement);
+    DrawVvsBar(state, groups, arrangement);
 
     for (size_t cascade = 0; cascade < groups.size(); ++cascade)
     {

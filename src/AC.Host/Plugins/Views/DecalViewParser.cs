@@ -20,6 +20,14 @@ namespace AC.Host.Plugins.Views
     /// </remarks>
     internal sealed class DecalViewParser
     {
+        /// <summary>
+        /// Virindi View Service's picture box and console, which Decal had no XML for: VVS's own
+        /// controls, as a view a plugin builds in code is given them.
+        /// </summary>
+        internal const string PictureProgId = "virindiviewservice.controls.hudpicturebox";
+
+        internal const string ConsoleProgId = "virindiviewservice.controls.hudconsole";
+
         private readonly Dictionary<string, ViewControl> _byName = new Dictionary<string, ViewControl>(StringComparer.Ordinal);
         private readonly List<ViewControl> _controls = new List<ViewControl>();
         private readonly List<string> _warnings = new List<string>();
@@ -100,6 +108,8 @@ namespace AC.Host.Plugins.Views
                 "decalcontrols.slider" => new Slider(progId, name),
                 "decalcontrols.list" => new List(progId, name),
                 "decalcontrols.progress" => new Progress(progId, name),
+                PictureProgId => new Picture(progId, name),
+                ConsoleProgId => new TextConsole(progId, name),
                 _ => new UnknownControl(progId, name),
             };
 
@@ -174,6 +184,10 @@ namespace AC.Host.Plugins.Views
 
                 case List list:
                     ReadColumns(element, list, where);
+                    break;
+
+                case Picture picture:
+                    picture.ImageKey = Image(element, "image", where);
                     break;
 
                 case Progress progress:

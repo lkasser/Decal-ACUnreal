@@ -61,6 +61,12 @@ namespace AC.Host.World
         /// </summary>
         public ICellData Cells { get; set; }
 
+        /// <summary>
+        /// The world's solid geometry, from the client's portal and cell archives; null without
+        /// them.
+        /// </summary>
+        public IWorldGeometry Geometry { get; set; }
+
         /// <summary>The cell the character was last known to be in, or 0 before anything said.</summary>
         public uint ViewerCell { get; private set; }
 

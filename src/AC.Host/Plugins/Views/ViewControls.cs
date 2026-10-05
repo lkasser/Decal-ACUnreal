@@ -21,10 +21,22 @@ namespace AC.Host.Plugins.Views
     /// </remarks>
     public abstract class ViewControl
     {
+        private string _tooltip = string.Empty;
+
         private protected ViewControl(string progId, string name)
         {
             ProgId = progId ?? string.Empty;
             Name = name ?? string.Empty;
+        }
+
+        /// <summary>
+        /// What a tooltip says while the pointer rests on the control, in the theme's tooltip -
+        /// as VVS's TooltipSystem.AssociateTooltip gave one to any control. Empty for none.
+        /// </summary>
+        public string Tooltip
+        {
+            get => _tooltip;
+            set => _tooltip = value ?? string.Empty;
         }
 
         /// <summary>The COM ProgID the XML named, such as "DecalControls.Checkbox".</summary>
@@ -249,6 +261,49 @@ namespace AC.Host.Plugins.Views
         /// the Status HUD's rows, for one.
         /// </summary>
         public bool Shadow { get; set; }
+
+        /// <summary>
+        /// The face by name - "Verdana" - for text a plugin lettered in a font of its own, as
+        /// VVS's DxTexture.BeginText was given one; null for the theme's.
+        /// </summary>
+        public string FontFace { get; set; }
+
+        /// <summary>
+        /// The size in points, as VVS's own controls and drawing sized text; 0 to go by
+        /// <see cref="FontSize"/>, which is Decal's.
+        /// </summary>
+        public float FontPoints { get; set; }
+
+        /// <summary>
+        /// Centred from top to bottom in the control, as VVS's WriteTextFormats.VerticalCenter
+        /// put a line; otherwise at the top, as Decal's labels were.
+        /// </summary>
+        public bool VerticalCenter { get; set; }
+
+        /// <summary>
+        /// The player clicked the label, as VVS's HudStaticText let one be clicked. A label
+        /// nothing listens to takes no clicks: they go to whatever is under it.
+        /// </summary>
+        public event EventHandler<ViewEventArgs> Clicked;
+
+        /// <summary>Whether a click on the label is wanted: something listens for one.</summary>
+        public bool TakesClicks => Clicked != null;
+
+        internal override bool Apply(OverlayCommand command, out string refusal)
+        {
+            if (command.Name != ViewVerbs.Press)
+                return WrongVerb(command, out refusal, ViewVerbs.Press);
+
+            if (Clicked == null)
+            {
+                refusal = $"{this} takes no clicks";
+                return false;
+            }
+
+            Clicked(this, new ViewEventArgs(this));
+            refusal = null;
+            return true;
+        }
     }
 
     /// <summary>DecalControls.Checkbox: a tick box with a label.</summary>
@@ -387,13 +442,33 @@ namespace AC.Host.Plugins.Views
         /// </summary>
         public event EventHandler<EditChangedEventArgs> Changed;
 
+        /// <summary>
+        /// The player pressed Enter in the box - VVS's key event for the Enter key's scan code,
+        /// which a chat box sends its line on. <see cref="Changed"/> has been raised first with
+        /// the text, which is already set.
+        /// </summary>
+        public event EventHandler<EditChangedEventArgs> Entered;
+
+        /// <summary>
+        /// How many times the plugin has asked for the box to take the keyboard, as Virindi HUDs'
+        /// CW_OpenBox clicked into its chat window's. The overlay puts the cursor in it each time
+        /// this goes up.
+        /// </summary>
+        public int FocusRequests { get; private set; }
+
+        /// <summary>Asks for the cursor to go into the box, ready for typing.</summary>
+        public void RequestFocus() => FocusRequests++;
+
         internal override bool Apply(OverlayCommand command, out string refusal)
         {
-            if (command.Name != ViewVerbs.Set)
+            bool entered = command.Name == ViewVerbs.Enter;
+            if (command.Name != ViewVerbs.Set && !entered)
                 return WrongVerb(command, out refusal, ViewVerbs.Set);
 
             Text = command.Value;
             Changed?.Invoke(this, new EditChangedEventArgs(this, Text));
+            if (entered)
+                Entered?.Invoke(this, new EditChangedEventArgs(this, Text));
             refusal = null;
             return true;
         }
@@ -562,6 +637,207 @@ namespace AC.Host.Plugins.Views
         public double Maximum { get; set; } = 100;
 
         public double Value { get; set; }
+    }
+
+    /// <summary>
+    /// A picture: an image over the control, or the part of one the plugin chooses, stretched to
+    /// fit - VVS's HudPictureBox, and what a plugin that drew for itself, as Virindi HUDs' HSM
+    /// bars did with DxTexture.DrawTexture, is made of here. Unlike a Decal button it does not
+    /// move when pressed, and it takes a click only when something listens for one.
+    /// </summary>
+    public sealed class Picture : ViewControl
+    {
+        private string _imageKey = string.Empty;
+
+        internal Picture(string progId, string name)
+            : base(progId, name)
+        {
+        }
+
+        /// <summary>An image key such as "portal:06001131" or "host:vhuds-ac2hsmbar_bg"; empty for nothing.</summary>
+        public string ImageKey
+        {
+            get => _imageKey;
+            set => _imageKey = value ?? string.Empty;
+        }
+
+        /// <summary>The part of the image drawn, as fractions of its width and height: 0 to 1 is all of it.</summary>
+        public double SourceLeft { get; private set; }
+
+        public double SourceTop { get; private set; }
+
+        public double SourceRight { get; private set; } = 1;
+
+        public double SourceBottom { get; private set; } = 1;
+
+        /// <summary>Draws only this part of the image, in fractions of its width and height.</summary>
+        public void Crop(double left, double top, double right, double bottom)
+        {
+            SourceLeft = left;
+            SourceTop = top;
+            SourceRight = right;
+            SourceBottom = bottom;
+        }
+
+        /// <summary>The player clicked the picture: VVS's HudPictureBox.Hit.</summary>
+        public event EventHandler<ViewEventArgs> Clicked;
+
+        /// <summary>Whether a click on it is wanted: something listens for one.</summary>
+        public bool TakesClicks => Clicked != null;
+
+        internal override bool Apply(OverlayCommand command, out string refusal)
+        {
+            if (command.Name != ViewVerbs.Press)
+                return WrongVerb(command, out refusal, ViewVerbs.Press);
+
+            if (Clicked == null)
+            {
+                refusal = $"{this} takes no clicks";
+                return false;
+            }
+
+            Clicked(this, new ViewEventArgs(this));
+            refusal = null;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// What a console line is drawn in: Virindi View Service's eConsoleColorClass, which each
+    /// theme's console colour scheme turns into a colour.
+    /// </summary>
+    public enum ConsoleColorClass
+    {
+        SystemMessage = 0,
+        Magic = 1,
+        MyMeleeAttack = 2,
+        OtherMeleeAttack = 3,
+        MyTell = 4,
+        OtherTell = 5,
+        GlobalChat = 6,
+        AllegianceChat = 7,
+        FellowChat = 8,
+        OpenChat = 9,
+        OpenEmote = 10,
+        StatusError = 11,
+        StatRaised = 12,
+        RareFound = 13,
+        PluginMessage = 96,
+        PluginError = 97,
+        Link = 98,
+        Unknown = 99,
+    }
+
+    /// <summary>Part of a console line in one colour: a run of words, or a link.</summary>
+    public sealed class ConsoleSegment
+    {
+        public ConsoleSegment(string text, ConsoleColorClass colorClass, string link = null)
+        {
+            Text = text ?? string.Empty;
+            ColorClass = colorClass;
+            Link = link;
+        }
+
+        public string Text { get; }
+
+        public ConsoleColorClass ColorClass { get; }
+
+        /// <summary>What a click on it means - a player's name, for a tell's link - or null for words that take no click.</summary>
+        public string Link { get; }
+    }
+
+    /// <summary>One line written to a <see cref="TextConsole"/>, as it was written: it wraps when drawn.</summary>
+    public sealed class ConsoleLine
+    {
+        public ConsoleLine(DateTime written, IReadOnlyList<ConsoleSegment> segments)
+        {
+            Written = written;
+            Segments = segments ?? Array.Empty<ConsoleSegment>();
+        }
+
+        /// <summary>When it was written, which the console's timestamp shows.</summary>
+        public DateTime Written { get; }
+
+        public IReadOnlyList<ConsoleSegment> Segments { get; }
+    }
+
+    /// <summary>
+    /// A console: lines of coloured text, the newest at the bottom, wrapped to the control's width
+    /// and scrolled with a bar - VVS's HudConsole, which its HudChatbox and the chat windows of
+    /// Virindi HUDs and Virindi Chat System were. A click on a link raises <see cref="LinkClicked"/>.
+    /// </summary>
+    public sealed class TextConsole : ViewControl
+    {
+        private readonly List<ConsoleLine> _lines = new List<ConsoleLine>();
+        private int _bufferSize = 100;
+
+        internal TextConsole(string progId, string name)
+            : base(progId, name)
+        {
+        }
+
+        /// <summary>The lines, oldest first.</summary>
+        public IReadOnlyList<ConsoleLine> Lines => _lines;
+
+        /// <summary>How many lines are kept, the oldest going first: VVS's BufferSize, 100.</summary>
+        public int BufferSize
+        {
+            get => _bufferSize;
+            set
+            {
+                _bufferSize = Math.Max(1, value);
+                Trim();
+            }
+        }
+
+        /// <summary>Each line begins with the time it was written, "H:mm:ss ", as VVS's ShowTimestamp did by default.</summary>
+        public bool ShowTimestamp { get; set; } = true;
+
+        /// <summary>A link was clicked: its line and segment, and what it links to.</summary>
+        public event EventHandler<ConsoleLinkEventArgs> LinkClicked;
+
+        /// <summary>Writes a line at the bottom, the time now.</summary>
+        public void WriteLine(params ConsoleSegment[] segments) => WriteLine(DateTime.Now, segments);
+
+        public void WriteLine(DateTime written, IReadOnlyList<ConsoleSegment> segments)
+        {
+            _lines.Add(new ConsoleLine(written, segments));
+            Trim();
+        }
+
+        public void Clear() => _lines.Clear();
+
+        /// <summary>The timestamp VVS put at a line's start: the hour unpadded, then minutes and seconds.</summary>
+        public static string Timestamp(DateTime written)
+            => written.Hour.ToString(CultureInfo.InvariantCulture) + ":" + written.Minute.ToString("00", CultureInfo.InvariantCulture)
+               + ":" + written.Second.ToString("00", CultureInfo.InvariantCulture) + " ";
+
+        private void Trim()
+        {
+            while (_lines.Count > _bufferSize)
+                _lines.RemoveAt(0);
+        }
+
+        internal override bool Apply(OverlayCommand command, out string refusal)
+        {
+            if (command.Name != ViewVerbs.Click)
+                return WrongVerb(command, out refusal, ViewVerbs.Click);
+
+            // The row is the line and the value the segment, as the overlay counts them - which
+            // is with the timestamp, when it is shown, as the first.
+            int segment = -1;
+            if (!TryParseIndex(command.RowId, out int line) || line < 0 || line >= _lines.Count
+                || !TryParseIndex(command.Value, out segment) || (segment -= ShowTimestamp ? 1 : 0) < 0
+                || segment >= _lines[line].Segments.Count || _lines[line].Segments[segment].Link == null)
+            {
+                refusal = $"line {command.RowId}, segment {command.Value} of {this} is not a link";
+                return false;
+            }
+
+            LinkClicked?.Invoke(this, new ConsoleLinkEventArgs(this, line, segment, _lines[line].Segments[segment].Link));
+            refusal = null;
+            return true;
+        }
     }
 
     /// <summary>

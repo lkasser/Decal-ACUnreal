@@ -75,6 +75,31 @@ namespace AC.Dat.Tests
             Assert.False(views["Old:Old Window"].ClickThrough);
         }
 
+        /// <summary>
+        /// The edges a hudified window was left stuck to, read as VVS read its LocSticky - the left
+        /// before the right, the top before the bottom - and the ExtraInfo row its bar kept its
+        /// orientation in. Written by SQLite, with VVS's own tables.
+        /// </summary>
+        [Fact]
+        public void TheStoreGivesTheEdgesAWindowWasStuckToAndTheBarsExtraInfo()
+        {
+            string fixture = Path.Combine(AppContext.BaseDirectory, "Data", "vvsbar.s3db");
+            Assert.True(VirindiViewStore.TryRead(fixture, out IReadOnlyDictionary<string, VirindiStoredView> views, out string error), error);
+
+            VirindiStoredView bar = views[VirindiViewStore.BarKey];
+            Assert.Equal((0, 300, true, "L"), (bar.X, bar.Y, bar.Ghosted, bar.StuckEdges));
+            Assert.Equal("RB", views["VirindiHUDs:StatusHUD"].StuckEdges);
+            Assert.Equal("LT", views["VirindiHUDs:Comps HUD"].StuckEdges);
+            Assert.Equal((string.Empty, 856, 360), (views["uTank2:uTank2"].StuckEdges, views["uTank2:uTank2"].Width, views["uTank2:uTank2"].Height));
+
+            Assert.True(VirindiViewStore.TryReadExtraInfo(fixture, out IReadOnlyDictionary<string, long> extra, out error), error);
+            Assert.Equal(1L, extra["VVSBarHorizontal"]);
+
+            // A store VVS's bar never wrote to has no ExtraInfo table: nothing, and no fault.
+            Assert.True(VirindiViewStore.TryReadExtraInfo(Fixture, out extra, out error), error);
+            Assert.Empty(extra);
+        }
+
         [Theory]
         [InlineData(null, null, "Float")]
         [InlineData("", null, "Float")]

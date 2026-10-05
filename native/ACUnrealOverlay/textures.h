@@ -71,10 +71,18 @@ void ReleaseAllTextures();
 struct DecalFonts {
     ImFont* regular = nullptr;
     ImFont* bold = nullptr;
+
+    // The other faces VVS drew in: Verdana, which Virindi HUDs' HSM bars and Minimalist Green
+    // lettered in, and Palatino Linotype, every other theme's console. Null when Windows has
+    // none; text in them then falls back to Times New Roman.
+    ImFont* verdana = nullptr;
+    ImFont* verdana_bold = nullptr;
+    ImFont* palatino = nullptr;
 };
 
-// Adds Times New Roman, regular and bold, to the atlas. Call once, after the context is
-// created and before the first frame. Returns false if either face was missing.
+// Adds Times New Roman, regular and bold, to the atlas, and Verdana and Palatino Linotype. Call
+// once, after the context is created and before the first frame. Returns false if either Times
+// New Roman face was missing.
 bool LoadDecalFonts(ImFontAtlas* atlas);
 
 const DecalFonts& GetDecalFonts();

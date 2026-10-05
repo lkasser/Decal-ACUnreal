@@ -104,6 +104,12 @@ namespace AC.Host.Overlay
                 BarGroup = view.BarGroup ?? string.Empty,
                 BarOrder = string.IsNullOrEmpty(view.BarAssembly) ? null : ViewBarOrder.Of(view.BarAssembly),
                 OpensFromGrip = view.OpensFromBarGrip,
+                X = view.Location?.X,
+                Y = view.Location?.Y,
+                MinWidth = view.MinWidth,
+                MinHeight = view.MinHeight,
+                MaxWidth = view.MaxWidth,
+                MaxHeight = view.MaxHeight,
                 Root = ToDto(view.Root),
             };
 
@@ -141,6 +147,7 @@ namespace AC.Host.Overlay
                 H = control.Height,
                 Enabled = control.Enabled,
                 Visible = control.Visible,
+                Tooltip = string.IsNullOrEmpty(control.Tooltip) ? null : control.Tooltip,
             };
 
             switch (control)
@@ -166,6 +173,23 @@ namespace AC.Host.Overlay
                     dto.Bold = text.Bold;
                     dto.Justify = Justify(text.Justify);
                     dto.Shadow = text.Shadow;
+                    dto.Clickable = text.TakesClicks;
+                    dto.Font = string.IsNullOrEmpty(text.FontFace) ? null : text.FontFace;
+                    dto.FontPoints = text.FontPoints > 0 ? text.FontPoints : 0;
+                    dto.Middle = text.VerticalCenter;
+                    break;
+
+                case Picture picture:
+                    dto.Type = ViewControlTypes.Picture;
+                    dto.Image = picture.ImageKey ?? string.Empty;
+                    dto.Clickable = picture.TakesClicks;
+                    if (picture.SourceLeft != 0 || picture.SourceTop != 0 || picture.SourceRight != 1 || picture.SourceBottom != 1)
+                        dto.Uv = new List<double> { picture.SourceLeft, picture.SourceTop, picture.SourceRight, picture.SourceBottom };
+                    break;
+
+                case TextConsole console:
+                    dto.Type = ViewControlTypes.Console;
+                    dto.Lines = MapConsole(console);
                     break;
 
                 case Checkbox box:
@@ -188,6 +212,7 @@ namespace AC.Host.Overlay
                     dto.Type = ViewControlTypes.Edit;
                     dto.Value = edit.Text ?? string.Empty;
                     dto.Image = edit.ImageKey ?? string.Empty;
+                    dto.FocusRequest = edit.FocusRequests;
                     break;
 
                 case Choice choice:
@@ -260,6 +285,35 @@ namespace AC.Host.Overlay
 
                 dto.Rows.Add(wire);
             }
+        }
+
+        /// <summary>
+        /// A console's lines, each led by its timestamp in the open-emote colour when the console
+        /// shows them, as VVS's HudConsole prefixed each line when it drew it.
+        /// </summary>
+        private static List<OverlayViewLine> MapConsole(TextConsole console)
+        {
+            List<OverlayViewLine> lines = new List<OverlayViewLine>(console.Lines.Count);
+            foreach (ConsoleLine line in console.Lines)
+            {
+                OverlayViewLine wire = new OverlayViewLine();
+                if (console.ShowTimestamp)
+                    wire.Segments.Add(new OverlayViewSegment { Text = TextConsole.Timestamp(line.Written), Class = (int)ConsoleColorClass.OpenEmote });
+
+                foreach (ConsoleSegment segment in line.Segments)
+                {
+                    wire.Segments.Add(new OverlayViewSegment
+                    {
+                        Text = segment.Text ?? string.Empty,
+                        Class = (int)segment.ColorClass,
+                        Link = segment.Link != null,
+                    });
+                }
+
+                lines.Add(wire);
+            }
+
+            return lines;
         }
 
         private static string Justify(ViewJustify justify) => justify switch

@@ -438,6 +438,7 @@ namespace AC.Host.Tests
                 .ToArray();
 
             string[] produced = Flatten(Wire.OverlayMapping.ToDto(DecalView.Parse(SampleViews.Tank)).Root)
+                .Concat(Flatten(Wire.OverlayMapping.ToDto(DecalView.Parse(SampleViews.Hud)).Root))
                 .Select(c => c.Type)
                 .Distinct()
                 .OrderBy(t => t, StringComparer.Ordinal)
@@ -607,6 +608,140 @@ namespace AC.Host.Tests
             Assert.Equal(3, read.Root.Pages.Count);
             Assert.Equal("Drudge", Named(read, "lstMonsters").Rows[0].Cells[1].Text);
             Assert.Equal(0xFFC00000L, Named(read, "lblE").TextColor);
+
+            // What only VVS's controls have is left out of a view of Decal's, which has none of it.
+            foreach (string key in new[] { "tooltip", "clickable", "font", "font_points", "middle", "uv", "lines", "focus_request" })
+                Assert.DoesNotContain($"\"{key}\":", json);
+        }
+
+        private sealed class HostingPlugin : IPlugin, IOverlayViews
+        {
+            public HostingPlugin(DecalView view)
+            {
+                Views = new[] { new OverlayViewWindow("hud", view) };
+            }
+
+            public string Name => "Hosting";
+
+            public IReadOnlyList<OverlayViewWindow> Views { get; }
+
+            public void Startup(IHost host)
+            {
+            }
+
+            public void Shutdown()
+            {
+            }
+        }
+
+        /// <summary>
+        /// A HUD's own title-bar button and its frame reach it through the host, as a control does:
+        /// a press on the button, and a new size the player gave it.
+        /// </summary>
+        [Fact]
+        public async Task AHostedViewsTitleButtonAndANewSizeReachItThroughTheHost()
+        {
+            DecalView view = DecalView.Parse(SampleViews.Hud);
+            ViewTitleButton add = new ViewTitleButton("add", "host:vhuds-plusicon");
+            int pressed = 0;
+            add.Pressed += (_, _) => pressed++;
+            view.TitleButtons.Add(add);
+            int resized = 0;
+            view.Resized += (_, _) => resized++;
+
+            DecalView own = DecalView.Parse(SampleViews.Flat);
+            ViewPlugin tank = new ViewPlugin("VirindiTank", () => own);
+            (GameHost host, ListLog log) = await RunAsync(new HostingPlugin(view), tank);
+
+            host.DispatchCommand("Hosting/hud", new OverlayCommand(ViewVerbs.Press, controlId: "add"));
+            host.DispatchCommand("Hosting/hud", new OverlayCommand(ViewVerbs.Resize, "300,200"));
+            host.DispatchCommand("VirindiTank", new OverlayCommand(ViewVerbs.Resize, "400,250"));
+            await SettleAsync(host);
+
+            Assert.Equal(1, pressed);
+            Assert.Equal((300, 200, 1), (view.Width, view.Height, resized));
+            Assert.Equal((400, 250), (own.Width, own.Height));
+            Assert.Empty(tank.Received);
+            Assert.DoesNotContain(log.Lines, l => l.StartsWith("WARN"));
+
+            // Kept within the least and most VVS allowed: 100 by 100 to 1000 by 1000 unless the
+            // plugin says otherwise; a window the player may not resize refuses.
+            Assert.True(view.Apply(new OverlayCommand(ViewVerbs.Resize, "20,5000")));
+            Assert.Equal((100, 1000), (view.Width, view.Height));
+            Assert.False(view.Apply(new OverlayCommand(ViewVerbs.Resize, "wide")));
+            view.Resizeable = false;
+            Assert.False(view.Apply(new OverlayCommand(ViewVerbs.Resize, "300,200")));
+
+            await host.DisposeAsync();
+        }
+
+        /// <summary>
+        /// VVS's own controls on the wire: a picture's part of its image and its click, a label's face,
+        /// points, centring and click, a tooltip, a console's lines with their timestamps and links,
+        /// an edit box's requests for the keyboard; and the window's first place and size limits.
+        /// </summary>
+        [Fact]
+        public void WhatVvssOwnControlsCarryGoesOverWhereTheyHaveIt()
+        {
+            DecalView view = DecalView.Parse(SampleViews.Hud);
+            view.Location = (0, 52);
+            view.MinWidth = 100;
+            view.MaxHeight = 50;
+            Picture icon = view.Get<Picture>("icon0");
+            icon.Crop(0, 0, 0.5, 1);
+            icon.Tooltip = "Prismatic Taper";
+            icon.Clicked += (_, _) => { };
+            TextConsole chat = view.Get<TextConsole>("chat");
+            chat.WriteLine(new DateTime(2026, 10, 5, 9, 4, 7), new[]
+            {
+                new ConsoleSegment("Bob", ConsoleColorClass.Link, "Bob"),
+                new ConsoleSegment(" tells you, \"hi\"", ConsoleColorClass.OtherTell),
+            });
+            FixedLayout root = (FixedLayout)view.Root;
+            StaticText label = view.AddControl<StaticText>(root, "cur0", 96, 15, 200, 14);
+            label.FontFace = "Verdana";
+            label.FontPoints = 10;
+            label.VerticalCenter = true;
+            Edit line = view.AddControl<Edit>(root, "line", 0, 44, 62, 16);
+            line.RequestFocus();
+
+            Wire.OverlayState state = new Wire.OverlayState();
+            state.Windows.Add(Wire.OverlayMapping.ToDto(new OverlayWindowInfo("Huds/comps", true, null, view)));
+            string json = Wire.OverlayJson.ToJson(state);
+            foreach (string key in new[] { "tooltip", "clickable", "font", "font_points", "middle", "uv", "lines", "segments", "class", "link", "focus_request", "min_width", "max_height", "x", "y" })
+                Assert.Contains($"\"{key}\":", json);
+
+            Wire.OverlayView read = Assert.Single(Wire.OverlayJson.ReadState(json).Windows).View;
+            Assert.Equal((0, 52, 100, 50), (read.X.Value, read.Y.Value, read.MinWidth, read.MaxHeight));
+
+            Wire.OverlayViewControl picture = Named(read, "icon0");
+            Assert.Equal((Wire.ViewControlTypes.Picture, "portal:0600262A", true, "Prismatic Taper"), (picture.Type, picture.Image, picture.Clickable, picture.Tooltip));
+            Assert.Equal(new[] { 0, 0, 0.5, 1 }, picture.Uv);
+
+            Wire.OverlayViewControl console = Named(read, "chat");
+            Wire.OverlayViewLine first = Assert.Single(console.Lines);
+            Assert.Equal(new[] { "9:04:07 ", "Bob", " tells you, \"hi\"" }, first.Segments.Select(s => s.Text));
+            Assert.Equal(new[] { 10, 98, 5 }, first.Segments.Select(s => s.Class));
+            Assert.Equal(new[] { false, true, false }, first.Segments.Select(s => s.Link));
+
+            Wire.OverlayViewControl text = Named(read, "cur0");
+            Assert.Equal(("Verdana", 10.0, true, false), (text.Font, text.FontPoints, text.Middle, text.Clickable));
+            Assert.Equal(1, Named(read, "line").FocusRequest);
+
+            // The console's link, clicked, reaches its event: the overlay counts the timestamp first.
+            string clicked = null;
+            chat.LinkClicked += (_, e) => clicked = e.Link;
+            Assert.True(view.Apply(new OverlayCommand(ViewVerbs.Click, "1", "0", "chat")));
+            Assert.Equal("Bob", clicked);
+            chat.ShowTimestamp = false;
+            Assert.False(view.Apply(new OverlayCommand(ViewVerbs.Click, "1", "0", "chat")));
+            Assert.True(view.Apply(new OverlayCommand(ViewVerbs.Click, "0", "0", "chat")));
+
+            // Only as many lines as it keeps, the oldest going first.
+            chat.BufferSize = 3;
+            for (int i = 0; i < 5; i++)
+                chat.WriteLine(new ConsoleSegment(i.ToString(CultureInfo.InvariantCulture), ConsoleColorClass.OpenChat));
+            Assert.Equal(new[] { "2", "3", "4" }, chat.Lines.Select(l => l.Segments[0].Text));
         }
     }
 }

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <new>
@@ -262,6 +263,41 @@ ViewControl ReadViewControl(const json& source, int depth, int& budget) {
     control.vertical = ReadBool(source, "vertical");
     control.enabled = ReadBool(source, "enabled", true);
     control.visible = ReadBool(source, "visible", true);
+    control.tooltip = ReadString(source, "tooltip");
+    control.clickable = ReadBool(source, "clickable");
+    control.font = ReadString(source, "font");
+    control.font_points = static_cast<float>(std::clamp(ReadDouble(source, "font_points", 0.0), 0.0, 200.0));
+    control.middle = ReadBool(source, "middle");
+    control.focus_request = static_cast<int>(ReadInt64(source, "focus_request"));
+
+    // A picture's part of its image: four fractions, kept within the image.
+    if (const json* uv = Field(source, "uv"); uv != nullptr && uv->is_array() && uv->size() == 4) {
+        for (size_t i = 0; i < 4; ++i) {
+            const json& part = (*uv)[i];
+            const double value = part.is_number() ? part.get<double>() : (i < 2 ? 0.0 : 1.0);
+            control.uv[i] = static_cast<float>(std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : (i < 2 ? 0.0 : 1.0));
+        }
+    }
+
+    // A console's lines. A console keeps a hundred; this is far past any and far short of what
+    // would weigh on the game.
+    if (const json* lines = Field(source, "lines"); lines != nullptr && lines->is_array()) {
+        for (const json& line : *lines) {
+            if (control.lines.size() >= 2000) break;
+            ConsoleLine read;
+            if (const json* segments = Field(line, "segments"); segments != nullptr && segments->is_array()) {
+                for (const json& segment : *segments) {
+                    if (read.segments.size() >= 64) break;
+                    ConsoleSegment run;
+                    run.text = ReadString(segment, "text");
+                    run.cls = static_cast<int>(ReadInt64(segment, "class", 99));
+                    run.link = ReadBool(segment, "link");
+                    read.segments.push_back(std::move(run));
+                }
+            }
+            control.lines.push_back(std::move(read));
+        }
+    }
 
     if (const json* pages = Field(source, "pages"); pages != nullptr && pages->is_array()) {
         for (const json& page : *pages) {
@@ -347,6 +383,16 @@ bool ReadView(const json& source, View& view) {
         view.x = ReadCoordinate(source, "x");
         view.y = ReadCoordinate(source, "y");
     }
+    view.stuck = ReadString(source, "stuck");
+    if (Field(source, "stored_width") != nullptr && Field(source, "stored_height") != nullptr) {
+        view.has_stored_size = true;
+        view.stored_width = std::max(1, ReadCoordinate(source, "stored_width"));
+        view.stored_height = std::max(1, ReadCoordinate(source, "stored_height"));
+    }
+    view.min_width = std::max(0, ReadCoordinate(source, "min_width"));
+    view.min_height = std::max(0, ReadCoordinate(source, "min_height"));
+    view.max_width = std::max(0, ReadCoordinate(source, "max_width"));
+    view.max_height = std::max(0, ReadCoordinate(source, "max_height"));
 
     int budget = kMaxViewControls;
     if (const json* root = Field(source, "root"); root != nullptr && root->is_object())
@@ -495,6 +541,23 @@ void ParseStateDocument(const json& document, State& into) {
         into.decal_bar.dock = std::clamp(ReadCoordinate(*bar, "dock"), 0, 2);
         into.decal_bar.start = std::max(0, ReadCoordinate(*bar, "start"));
         into.decal_bar.length = std::max(112, ReadCoordinate(*bar, "length"));
+        into.decal_bar.alpha = std::clamp(static_cast<int>(ReadInt64(*bar, "alpha", 255)), 0, 255);
+        into.decal_bar.view_alpha = std::clamp(static_cast<int>(ReadInt64(*bar, "view_alpha", 255)), 0, 255);
+    }
+    if (const json* bar = Field(document, "vvs_bar"); bar != nullptr && bar->is_object()) {
+        if (Field(*bar, "x") != nullptr && Field(*bar, "y") != nullptr) {
+            into.vvs_bar.has_position = true;
+            into.vvs_bar.x = ReadCoordinate(*bar, "x");
+            into.vvs_bar.y = ReadCoordinate(*bar, "y");
+        }
+        if (Field(*bar, "stuck") != nullptr) {
+            into.vvs_bar.has_stuck = true;
+            into.vvs_bar.stuck = ReadString(*bar, "stuck");
+        }
+        if (Field(*bar, "horizontal") != nullptr) {
+            into.vvs_bar.has_horizontal = true;
+            into.vvs_bar.horizontal = ReadBool(*bar, "horizontal");
+        }
     }
 }
 

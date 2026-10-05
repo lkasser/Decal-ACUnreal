@@ -109,4 +109,24 @@ namespace AC.Host.Plugins.Views
 
         public int Column { get; }
     }
+
+    /// <summary>A link in a console was clicked.</summary>
+    public sealed class ConsoleLinkEventArgs : ViewEventArgs
+    {
+        public ConsoleLinkEventArgs(ViewControl control, int line, int segment, string link)
+            : base(control)
+        {
+            Line = line;
+            Segment = segment;
+            Link = link ?? string.Empty;
+        }
+
+        /// <summary>The line clicked, counting from the oldest kept.</summary>
+        public int Line { get; }
+
+        public int Segment { get; }
+
+        /// <summary>What the link links to: for a tell's link, the player's name.</summary>
+        public string Link { get; }
+    }
 }

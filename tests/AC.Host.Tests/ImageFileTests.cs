@@ -75,6 +75,23 @@ namespace AC.Host.Tests
             Assert.Equal((16, 16), (icon.Width, icon.Height));
         }
 
+        /// <summary>
+        /// The HSM Bar's art - its background and a bar each for health, stamina and mana, all the
+        /// bar's own 365 by 75 - comes the same way, from Virindi HUDs' resources.
+        /// </summary>
+        [Theory]
+        [InlineData("host:vhuds-ac2hsmbar_bg")]
+        [InlineData("host:vhuds-ac2hsmbar_h")]
+        [InlineData("host:vhuds-ac2hsmbar_s")]
+        [InlineData("host:vhuds-ac2hsmbar_m")]
+        public void TheHsmBarsArtIsCarriedAtItsOwnSize(string key)
+        {
+            ImageCatalog catalog = new ImageCatalog(null, (string)null, null);
+
+            Assert.True(catalog.TryGet(key, out RgbaImage art, out string error), error);
+            Assert.Equal((365, 75), (art.Width, art.Height));
+        }
+
         // ---------------------------------------------------------------- PNG
 
         [Fact]

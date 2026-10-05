@@ -190,9 +190,13 @@ enum class ViewControlType : int {
     Slider,
     List,
     Progress,
+    Picture,  // VVS's HudPictureBox: an image, or the part of one in `uv`, stretched over it
+    Console,  // VVS's HudConsole: coloured lines, the newest at the bottom, wrapped and scrolled
 };
 
 inline ViewControlType ViewControlTypeFromWire(const std::string& type) {
+    if (type == "picture") return ViewControlType::Picture;
+    if (type == "console") return ViewControlType::Console;
     if (type == "fixed") return ViewControlType::Fixed;
     if (type == "notebook") return ViewControlType::Notebook;
     if (type == "static") return ViewControlType::Static;
@@ -235,6 +239,18 @@ struct ViewRow {
     std::vector<ViewCell> cells;
 };
 
+// A run of a console line in one colour: VVS's eConsoleColorClass, which the theme's console
+// colour scheme turns into a colour. A link sends "click" when clicked.
+struct ConsoleSegment {
+    std::string text;
+    int cls = 99;  // Unknown
+    bool link = false;
+};
+
+struct ConsoleLine {
+    std::vector<ConsoleSegment> segments;
+};
+
 struct ViewColumn {
     ViewColumnType type = ViewColumnType::Text;
     int width = 0;  // Decal pixels; 0 shares what the fixed columns leave
@@ -274,6 +290,29 @@ struct ViewControl {
     bool vertical = false;
     bool enabled = true;
     bool visible = true;
+
+    // Shown in the theme's tooltip while the pointer rests on the control; empty for none.
+    std::string tooltip;
+
+    // A label or picture that takes a click, sending "press": VVS's HudStaticText and
+    // HudPictureBox let a plugin hear one.
+    bool clickable = false;
+
+    // A label's own face by name ("Verdana") and its size in points; empty and 0 for the theme's.
+    std::string font;
+    float font_points = 0.0f;
+
+    // A label centred from top to bottom, VVS's VerticalCenter; otherwise at the top.
+    bool middle = false;
+
+    // A picture's part of its image, as fractions: left, top, right, bottom.
+    float uv[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+
+    // An edit box's count of the plugin's requests for the keyboard.
+    int focus_request = 0;
+
+    // A console's lines, oldest first.
+    std::vector<ConsoleLine> lines;
 
     std::vector<ViewPage> pages;
     std::vector<ViewControl> children;
@@ -318,6 +357,20 @@ struct View {
     bool has_position = false;
     int x = 0;
     int y = 0;
+
+    // The screen edges a hudified window was left stuck to, "L"/"R" then "T"/"B", from vvs.s3db;
+    // the overlay's own memory of them, once there is one, outranks it.
+    std::string stuck;
+
+    // The size the player left a window they could resize at, from vvs.s3db: the window opens at
+    // it and the plugin is told, with "resize". And how small and large the player may make it.
+    bool has_stored_size = false;
+    int stored_width = 0;
+    int stored_height = 0;
+    int min_width = 0;
+    int min_height = 0;
+    int max_width = 0;
+    int max_height = 0;
 
     // A HUD: no switch on any bar, no close button, no alpha buttons - Virindi HUDs turned
     // all three off - and buttons of the plugin's own on its title bar.
@@ -401,6 +454,20 @@ struct DecalBarSettings {
     int dock = 0;      // BarDock: 0 top, 1 left, 2 right
     int start = 0;     // BarStart: pixels along the edge
     int length = 250;  // BarLength: pixels, at least 112
+    int alpha = 255;       // BarAlpha: how opaque the bar is
+    int view_alpha = 255;  // ViewAlpha: how opaque Decal's own views are, until the player changes one
+};
+
+// VVS's bar as the player left it, from vvs.s3db: its own row - where, and against which edges -
+// and ExtraInfo's VVSBarHorizontal. Each part only when the store has it.
+struct VvsBarSettings {
+    bool has_position = false;
+    int x = 0;
+    int y = 0;
+    bool has_stuck = false;
+    std::string stuck;
+    bool has_horizontal = false;
+    bool horizontal = false;
 };
 
 struct State {
@@ -411,6 +478,8 @@ struct State {
     std::string default_theme;
 
     DecalBarSettings decal_bar;
+
+    VvsBarSettings vvs_bar;
 
     // Who wants the next key the player presses - a hotkey window's Set - or empty. The overlay
     // catches that key, keeps it from the game, and sends "key-captured" to this owner with

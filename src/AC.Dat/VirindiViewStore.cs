@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Microsoft.Win32;
 
 namespace AC.Dat
@@ -34,6 +35,20 @@ namespace AC.Dat
         public int Width { get; set; }
 
         public int Height { get; set; }
+
+        /// <summary>
+        /// LocSticky: the screen edges a hudified window was pushed against and kept to, as VVS's
+        /// flags - 1 left, 2 right, 4 top, 8 bottom.
+        /// </summary>
+        public int Sticky { get; set; }
+
+        /// <summary>
+        /// The edges in <see cref="Sticky"/> as the overlay keeps them - "L" or "R", then "T" or
+        /// "B" - read as VVS read them: left before right, top before bottom. Empty for none.
+        /// </summary>
+        public string StuckEdges
+            => ((Sticky & 1) != 0 ? "L" : (Sticky & 2) != 0 ? "R" : string.Empty)
+               + ((Sticky & 4) != 0 ? "T" : (Sticky & 8) != 0 ? "B" : string.Empty);
     }
 
     /// <summary>
@@ -159,7 +174,46 @@ namespace AC.Dat
                         Y = (int)Number(row, "LocY"),
                         Width = (int)Number(row, "UserW"),
                         Height = (int)Number(row, "UserH"),
+                        Sticky = (int)Number(row, "LocSticky"),
                     };
+                }
+
+                error = null;
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException || ex is InvalidDataException || ex is KeyNotFoundException || ex is UnauthorizedAccessException)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>The key VVS stored its own bar under: its assembly's name and the bar view's title.</summary>
+        public const string BarKey = "VirindiViewService:VVS Bar";
+
+        /// <summary>
+        /// The store's ExtraInfo table, mKey to mValue - where VVS kept VVSBarHorizontal. Empty,
+        /// and true, for a store that has no such table, as VVS made it only when first written.
+        /// False, with the reason, when the file cannot be read.
+        /// </summary>
+        public static bool TryReadExtraInfo(string path, out IReadOnlyDictionary<string, long> values, out string error)
+        {
+            Dictionary<string, long> read = new Dictionary<string, long>(StringComparer.Ordinal);
+            values = read;
+            try
+            {
+                SqliteFile file = SqliteFile.Open(path);
+                if (!file.TableNames().Contains("ExtraInfo", StringComparer.OrdinalIgnoreCase))
+                {
+                    error = null;
+                    return true;
+                }
+
+                foreach (IReadOnlyDictionary<string, object> row in file.ReadTable("ExtraInfo"))
+                {
+                    string key = Text(row, "mKey");
+                    if (!string.IsNullOrEmpty(key))
+                        read[key] = Number(row, "mValue");
                 }
 
                 error = null;

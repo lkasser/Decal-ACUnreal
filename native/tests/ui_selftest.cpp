@@ -233,6 +233,11 @@ static State Rich()
     state.status.server_connected = true;
     state.status.character = "Frostfell";
 
+    // Decal's bar compact, as the player's registry has it.
+    state.decal_bar.known = true;
+    state.decal_bar.state = 1;
+    state.decal_bar.length = 250;
+
     // Decal's own window: first on the bar, and closed until asked for.
     PluginWindow decal;
     decal.owner = "Decal";
@@ -624,6 +629,14 @@ int main()
         };
         const std::vector<int> first_page = visible();
         CHECK(!first_page.empty() && first_page.size() < 31);
+
+        // With nothing in Decal's registry the bar is expanded, as Decal's own BarState 0 was:
+        // labelled switches, a hundred pixels each.
+        if (!first_page.empty())
+        {
+            const ImRect* labelled = BarSwitch("P" + std::to_string(first_page.front()));
+            CHECK(labelled != nullptr && std::fabs(labelled->GetWidth() - 100.0f) < 0.5f && std::fabs(labelled->GetHeight() - 21.0f) < 0.5f);
+        }
         const ImRect* on = RectOf(WindowPath("###decalbar").Str("page-on"));
         CHECK(on != nullptr);
         if (on != nullptr)
@@ -642,7 +655,12 @@ int main()
     //     grip opens the host's status window; the gold square switches it between compact
     //     and expanded; the grey square docks it to the left, the right and the top again.
     {
+        // Compact, as the player's registry has it; with nothing there Decal's bar starts
+        // expanded, which the hostile plugins above had.
         State plain = Rich();
+        plain.decal_bar.known = true;
+        plain.decal_bar.state = 1;
+        plain.decal_bar.length = 250;
         Frame(plain);
         ImGuiWindow* bar = ImGui::FindWindowByName("###decalbar");
         const ImRect* grip = RectOf(WindowPath("###decalbar").Str("grip-start"));
@@ -726,7 +744,7 @@ int main()
                 const ImRect* grey = RectOf(WindowPath("###decalbar").Str("dock"));
                 CHECK(whole != nullptr && grey != nullptr && whole->Max.x <= grey->Min.x + 0.5f);
                 ImGuiWindow* lengthened = ImGui::FindWindowByName("###decalbar");
-                CHECK(lengthened != nullptr && lengthened->Size.x >= 166.0f - 0.5f);
+                CHECK(lengthened != nullptr && lengthened->Size.x >= 160.0f - 0.5f);
                 Frame(plain);
                 Frame(plain);
             }
@@ -913,8 +931,24 @@ int main()
             Append(typed, Frame(decal));
             io.AddKeyEvent(ImGuiKey_Enter, false);
             Append(typed, Frame(decal));
-            ExpectOne(typed, "set", "txtRange", "42");
-            std::printf("   Decal edit -> set txtRange=%s\n", typed.empty() ? "?" : typed[0].value.c_str());
+            // Let go by Enter: "enter", which the host takes as a set and as VVS's Enter key.
+            ExpectOne(typed, "enter", "txtRange", "42");
+            std::printf("   Decal edit -> enter txtRange=%s\n", typed.empty() ? "?" : typed[0].value.c_str());
+
+            // Let go by a click elsewhere: only "set". Long enough after the last click not to be
+            // a double click, which would choose the word rather than put the cursor at its end.
+            std::vector<Command> left;
+            for (int wait = 0; wait < 30; ++wait)
+                Append(left, Frame(decal));
+            if (const ImRect* edit_again = RectOf(page0.Str("txtRange").Str("##edit")))
+            {
+                Append(left, ClickAt(decal, ImVec2(edit_again->Max.x - 4.0f, edit_again->GetCenter().y)));
+                io.AddInputCharacter('7');
+                Append(left, Frame(decal));
+                Append(left, ClickAt(decal, ImVec2(1900.0f, 1060.0f)));
+            }
+            ExpectOne(left, "set", "txtRange", "47");
+            std::printf("   and left by a click elsewhere -> set txtRange=%s\n", left.empty() ? "?" : left[0].value.c_str());
         }
         else
         {
@@ -1971,6 +2005,374 @@ int main()
 
         std::printf("18. Minimalist, Green, Black and Transparent from a window's menu, each by its own numbers;\n");
         std::printf("   glyphs redrawn as VVS redrew them; the H.S. button's hot-dog stand, and ab on from it\n");
+    }
+
+    // 19. What Virindi HUDs' HSM bars, Chat Window and Comps HUD are made of: pictures cut from
+    // their art, labels in a face and size of their own that take a click, tooltips, a console
+    // whose links click, an edit box the plugin can put the cursor in, and a window the player
+    // resizes by its frame from the size vvs.s3db left it at.
+    {
+        using overlay::ViewControl;
+        using overlay::ViewControlType;
+        auto control = [](ViewControlType type, const char* name, int x, int y, int w, int h) {
+            ViewControl c;
+            c.type = type;
+            c.name = name;
+            c.x = x;
+            c.y = y;
+            c.w = w;
+            c.h = h;
+            return c;
+        };
+
+        State huds;
+        huds.revision = 40;
+        huds.published_ms = NowMs();
+
+        PluginWindow hsm;
+        hsm.owner = "Huds/hsm";
+        hsm.has_view = true;
+        hsm.view.title = "HSM Bar";
+        hsm.view.bar = "vvs";
+        hsm.view.theme = "Float";
+        hsm.view.show_in_bar = false;
+        hsm.view.resizeable = false;
+        hsm.view.width = 365;
+        hsm.view.height = 75;
+        hsm.view.root.type = ViewControlType::Fixed;
+        hsm.view.root.children.push_back(control(ViewControlType::Picture, "bg", 0, 0, 365, 75));
+        hsm.view.root.children.back().image = "host:vhuds-ac2hsmbar_bg";
+        hsm.view.root.children.push_back(control(ViewControlType::Picture, "bar0", 0, 0, 202, 75));
+        hsm.view.root.children.back().image = "host:vhuds-ac2hsmbar_h";
+        hsm.view.root.children.back().uv[2] = 202.0f / 365.0f;
+        hsm.view.root.children.push_back(control(ViewControlType::Static, "cur0", 96, 15, 200, 14));
+        hsm.view.root.children.back().text = "100";
+        hsm.view.root.children.back().font = "Verdana";
+        hsm.view.root.children.back().font_points = 10.0f;
+        hsm.view.root.children.back().bold = true;
+        hsm.view.root.children.back().middle = true;
+        hsm.view.root.children.back().shadow = true;
+        // A Comps HUD row: its picture and its count both take a click and name the item.
+        hsm.view.root.children.push_back(control(ViewControlType::Picture, "icon0", 300, 40, 20, 20));
+        hsm.view.root.children.back().image = "color:FFFF7F50";
+        hsm.view.root.children.back().clickable = true;
+        hsm.view.root.children.back().tooltip = "Prismatic Taper";
+        hsm.view.root.children.push_back(control(ViewControlType::Static, "count0", 322, 40, 40, 20));
+        hsm.view.root.children.back().text = "973";
+        hsm.view.root.children.back().clickable = true;
+        hsm.view.root.children.back().tooltip = "Prismatic Taper";
+        huds.windows.push_back(hsm);
+
+        PluginWindow chat;
+        chat.owner = "Huds/chat";
+        chat.has_view = true;
+        chat.view.title = "Game Chat";
+        chat.view.bar = "vvs";
+        chat.view.theme = "Float";
+        chat.view.show_in_bar = false;
+        chat.view.resizeable = true;
+        chat.view.width = 500;
+        chat.view.height = 175;
+        chat.view.has_stored_size = true;
+        chat.view.stored_width = 600;
+        chat.view.stored_height = 200;
+        chat.view.min_width = 100;
+        chat.view.min_height = 100;
+        chat.view.max_width = 1000;
+        chat.view.max_height = 1000;
+        chat.view.root.type = ViewControlType::Fixed;
+        ViewControl console = control(ViewControlType::Console, "console0", 0, 0, 0, 159);
+        for (const char* words : {"You say, \"one\"", "You say, \"two\""})
+            console.lines.push_back(overlay::ConsoleLine{{overlay::ConsoleSegment{"12:00:00 ", 10, false}, overlay::ConsoleSegment{words, 9, false}}});
+        console.lines.push_back(overlay::ConsoleLine{{overlay::ConsoleSegment{"12:00:01 ", 10, false}, overlay::ConsoleSegment{"Bob", 98, true},
+                                                      overlay::ConsoleSegment{" tells you, \"hi\"", 5, false}}});
+        chat.view.root.children.push_back(console);
+        chat.view.root.children.push_back(control(ViewControlType::Edit, "VH_TextInputBox", 0, 159, 0, 16));
+        huds.windows.push_back(chat);
+
+        // Decal's ViewAlpha: a Decal view starts at it, a VVS view opaque.
+        PluginWindow faded;
+        faded.owner = "Faded";
+        faded.has_view = true;
+        faded.view.title = "Faded";
+        faded.view.width = 120;
+        faded.view.height = 60;
+        faded.view.root.type = ViewControlType::Fixed;
+        huds.windows.push_back(faded);
+        huds.decal_bar.known = true;
+        huds.decal_bar.alpha = 128;
+        huds.decal_bar.view_alpha = 140;
+
+        overlay::SetDecalReveal(false);
+        std::vector<Command> first = Frame(huds);
+        Append(first, Frame(huds));
+        for (const char* owner : {"Huds/hsm", "Huds/chat", "Faded"})
+        {
+            if (!IsOpenWindow((std::string("###decal:") + owner).c_str()))
+                CHECK(!"a HUD's window did not open");
+        }
+
+        // The chat window opens at the size vvs.s3db left it at, and its plugin is told, once.
+        int resizes = 0;
+        for (const Command& c : first)
+        {
+            if (c.name == "resize")
+            {
+                ++resizes;
+                CHECK(c.owner == "Huds/chat" && c.value == "600,200");
+            }
+        }
+        CHECK(resizes == 1);
+        CHECK(Frame(huds).empty());
+        CHECK(overlay::DescribeDecalWindow("Huds/chat", chat.view).width == 600);
+        CHECK(overlay::DescribeDecalWindow("Faded", faded.view).alpha == 140);
+        CHECK(overlay::DescribeDecalWindow("Huds/hsm", hsm.view).alpha == 255);
+
+        ImGui::SetWindowPos("###decal:Huds/hsm", ImVec2(300.0f, 700.0f));
+        ImGui::SetWindowPos("###decal:Huds/chat", ImVec2(800.0f, 300.0f));
+        ImGui::SetWindowPos("###decal:Faded", ImVec2(1600.0f, 900.0f));
+        Frame(huds);
+        Frame(huds);
+
+        const IdPath hsm_body = WindowPath("###decal:Huds/hsm").Str("Huds/hsm").Int(0);
+        // A picture nothing listens to takes no click; one something does, and a label too.
+        CHECK(RectOf(hsm_body.Str("bg").Str("picture")) == nullptr);
+        CHECK(RectOf(hsm_body.Str("cur0").Str("label")) == nullptr);
+        if (const ImRect* icon = RectOf(hsm_body.Str("icon0").Str("picture")))
+            ExpectOne(ClickAt(huds, icon->GetCenter()), "press", "icon0", "", "Huds/hsm");
+        else
+            CHECK(!"the clickable picture has no item");
+        if (const ImRect* count = RectOf(hsm_body.Str("count0").Str("label")))
+        {
+            // The rect goes with the frame it was drawn in, so its middle is kept.
+            const ImVec2 middle = count->GetCenter();
+            ExpectOne(ClickAt(huds, middle), "press", "count0", "", "Huds/hsm");
+
+            // Resting on it shows its tooltip.
+            io.AddMousePosEvent(middle.x, middle.y);
+            for (int wait = 0; wait < 3; ++wait)
+                Frame(huds);
+            ImGuiWindow* tip = ImGui::FindWindowByName("##Tooltip_00");
+            CHECK(tip != nullptr && tip->Active);
+            io.AddMousePosEvent(1900.0f, 1060.0f);
+            Frame(huds);
+        }
+        else
+        {
+            CHECK(!"the clickable label has no item");
+        }
+
+        // The console: the newest line at the foot, its player's name a link that says which.
+        const IdPath chat_window = WindowPath("###decal:Huds/chat");
+        const IdPath chat_body = chat_window.Str("Huds/chat").Int(0);
+        ImGuiWindow* chat_win = ImGui::FindWindowByName("###decal:Huds/chat");
+        if (const ImRect* link = RectOf(chat_body.Str("console0").Int(2).Int(1).Str("link")))
+        {
+            const float body_top = chat_win != nullptr ? chat_win->Pos.y + 5.0f + 19.0f : 0.0f;
+            CHECK(std::fabs(link->Max.y - (body_top + 159.0f - 2.0f)) < 1.5f);
+            const std::vector<Command> clicked = ClickAt(huds, link->GetCenter());
+            CHECK(clicked.size() == 1 && clicked[0].name == "click" && clicked[0].control_id == "console0" &&
+                  clicked[0].value == "1" && clicked[0].row_id == "2" && clicked[0].owner == "Huds/chat");
+        }
+        else
+        {
+            CHECK(!"the console's link has no item");
+        }
+
+        // The plugin asks for the keyboard: the cursor goes into the box, and Enter sends the line.
+        const IdPath input = chat_body.Str("VH_TextInputBox").Str("##edit");
+        huds.windows[1].view.root.children[1].focus_request = 1;
+        Frame(huds);
+        Frame(huds);
+        CHECK(ImGui::GetActiveID() == input.id);
+        for (char ch : std::string("hello"))
+            io.AddInputCharacter(static_cast<unsigned int>(ch));
+        std::vector<Command> sent = Frame(huds);
+        io.AddKeyEvent(ImGuiKey_Enter, true);
+        Append(sent, Frame(huds));
+        io.AddKeyEvent(ImGuiKey_Enter, false);
+        Append(sent, Frame(huds));
+        ExpectOne(sent, "enter", "VH_TextInputBox", "hello", "Huds/chat");
+
+        // Its frame resizes it: the corner by the pointer, within the least and the most, the
+        // plugin told, and the size kept.
+        auto drag = [&](const IdPath& grip, ImVec2 by) {
+            std::vector<Command> out;
+            const ImRect* at = RectOf(grip);
+            if (at == nullptr)
+                return out;
+            const ImVec2 from = at->GetCenter();
+            io.AddMousePosEvent(from.x, from.y);
+            Append(out, Frame(huds));
+            io.AddMouseButtonEvent(0, true);
+            Append(out, Frame(huds));
+            for (int step = 1; step <= 4; ++step)
+            {
+                io.AddMousePosEvent(from.x + by.x * static_cast<float>(step) / 4.0f, from.y + by.y * static_cast<float>(step) / 4.0f);
+                Append(out, Frame(huds));
+            }
+            io.AddMouseButtonEvent(0, false);
+            Append(out, Frame(huds));
+            io.AddMousePosEvent(1900.0f, 1060.0f);
+            Append(out, Frame(huds));
+            Append(out, Frame(huds));
+            return out;
+        };
+        auto last_resize = [](const std::vector<Command>& commands) {
+            std::string value;
+            for (const Command& c : commands)
+                if (c.name == "resize" && c.owner == "Huds/chat") value = c.value;
+            return value;
+        };
+        std::vector<Command> grown = drag(chat_window.Str("size-bottom-right"), ImVec2(50.0f, 30.0f));
+        CHECK(last_resize(grown) == "650,230");
+        CHECK(std::string(ImGui::SaveIniSettingsToMemory()).find("Size=650,230") != std::string::npos);
+        chat_win = ImGui::FindWindowByName("###decal:Huds/chat");
+        CHECK(chat_win != nullptr && std::fabs(chat_win->Size.x - (650.0f + 10.0f)) < 0.5f);
+
+        // From the left edge the window's right side stays where it was.
+        const float right = chat_win != nullptr ? chat_win->Pos.x + chat_win->Size.x : 0.0f;
+        std::vector<Command> wider = drag(chat_window.Str("size-left"), ImVec2(-40.0f, 0.0f));
+        CHECK(last_resize(wider) == "690,230");
+        chat_win = ImGui::FindWindowByName("###decal:Huds/chat");
+        CHECK(chat_win != nullptr && std::fabs(chat_win->Pos.x + chat_win->Size.x - right) < 1.0f);
+
+        std::vector<Command> shrunk = drag(chat_window.Str("size-bottom-right"), ImVec2(-1500.0f, -1500.0f));
+        CHECK(last_resize(shrunk) == "100,100");
+
+        // A hudified window vvs.s3db left against the right edge is put back against it.
+        PluginWindow stuck = hsm;
+        stuck.owner = "Huds/stuck";
+        stuck.view.ghosted = true;
+        stuck.view.stuck = "R";
+        stuck.view.has_position = true;
+        stuck.view.x = 200;
+        stuck.view.y = 200;
+        huds.windows.push_back(stuck);
+        Frame(huds);
+        Frame(huds);
+        ImGuiWindow* placed = ImGui::FindWindowByName("###decal:Huds/stuck");
+        CHECK(placed != nullptr && std::fabs(placed->Pos.x + placed->Size.x - 5.0f - 1920.0f) < 1.0f);
+        CHECK(overlay::DescribeDecalWindow("Huds/stuck", stuck.view).stuck == "R");
+
+        // VVS's bar - there while a VVS view is on it - is kept on screen as a hudified view is.
+        PluginWindow listed;
+        listed.owner = "Huds/uis";
+        listed.starts_closed = true;
+        listed.has_view = true;
+        listed.view.title = "Virindi UIs";
+        listed.view.bar = "vvs";
+        listed.view.width = 180;
+        listed.view.height = 200;
+        listed.view.root.type = ViewControlType::Fixed;
+        huds.windows.push_back(listed);
+        Frame(huds);
+        ImGui::SetWindowPos("###vvsbar", ImVec2(-300.0f, 500.0f));
+        Frame(huds);
+        Frame(huds);
+        ImGuiWindow* vvsbar = ImGui::FindWindowByName("###vvsbar");
+        CHECK(vvsbar != nullptr && vvsbar->Active && std::fabs(vvsbar->Pos.x) < 0.5f);
+
+        // 20. Decal's bar at the player's 114 pixels, laid out by Inject.dll's own rectangles: the
+        // grips' lines from 3 and to 4 short of the end, the gold square at (12, 3) and the grey
+        // 28 short, the switches 20 by 21 from 30 - or from 50 between the arrows once they take
+        // more than 58 short - and the same down a side; on an expanded side the squares and the
+        // arrows on its top row.
+        {
+            State player = Rich();
+            player.revision = 50;
+            player.decal_bar.known = true;
+            player.decal_bar.state = 1;
+            player.decal_bar.start = 4;
+            player.decal_bar.length = 114;
+            player.decal_bar.alpha = 255;
+            Frame(player);
+            Frame(player);
+
+            auto at = [&](const char* window, const char* item, ImVec2 where, ImVec2 size) {
+                ImGuiWindow* bar_window = ImGui::FindWindowByName(window);
+                const ImRect* rect = RectOf(WindowPath(window).Str(item));
+                if (bar_window == nullptr || rect == nullptr)
+                {
+                    std::printf("FAIL: no %s on %s\n", item, window);
+                    ++g_failures;
+                    return;
+                }
+                const ImVec2 min(rect->Min.x - bar_window->Pos.x, rect->Min.y - bar_window->Pos.y);
+                const bool right = std::fabs(min.x - where.x) < 0.5f && std::fabs(min.y - where.y) < 0.5f &&
+                                   std::fabs(rect->GetWidth() - size.x) < 0.5f && std::fabs(rect->GetHeight() - size.y) < 0.5f;
+                CHECK(right);
+                if (!right)
+                    std::printf("   %s on %s at %.0f,%.0f %.0fx%.0f\n", item, window, min.x, min.y, rect->GetWidth(), rect->GetHeight());
+            };
+            auto first_switch = [&](const char* window) -> std::string {
+                for (const PluginWindow& w : player.windows)
+                    if (RectOf(WindowPath(window).Str(("owner:" + w.owner).c_str())) != nullptr)
+                        return "owner:" + w.owner;
+                return std::string();
+            };
+
+            ImGuiWindow* top = ImGui::FindWindowByName("###decalbar");
+            CHECK(top != nullptr && std::fabs(top->Size.x - 114.0f) < 0.5f && std::fabs(top->Size.y - 23.0f) < 0.5f);
+            at("###decalbar", "grip-start", ImVec2(2, 3), ImVec2(7, 17));
+            at("###decalbar", "grip-end", ImVec2(105, 3), ImVec2(7, 17));
+            at("###decalbar", "minmax", ImVec2(12, 3), ImVec2(16, 16));
+            at("###decalbar", "dock", ImVec2(86, 3), ImVec2(16, 16));
+            // Four switches take 88 pixels, more than the 56 the bar has: paged.
+            at("###decalbar", "page-back", ImVec2(30, 3), ImVec2(16, 16));
+            at("###decalbar", "page-on", ImVec2(68, 3), ImVec2(16, 16));
+            const std::string shown = first_switch("###decalbar");
+            CHECK(!shown.empty());
+            if (!shown.empty())
+                at("###decalbar", shown.c_str(), ImVec2(50, 1), ImVec2(20, 21));
+
+            // Down the left, compact.
+            if (const ImRect* dock = RectOf(WindowPath("###decalbar").Str("dock")))
+                ClickAt(player, dock->GetCenter());
+            Frame(player);
+            at("###decalbar-left", "grip-start", ImVec2(3, 2), ImVec2(14, 7));
+            at("###decalbar-left", "minmax", ImVec2(3, 12), ImVec2(16, 16));
+            at("###decalbar-left", "dock", ImVec2(3, 86), ImVec2(16, 16));
+            at("###decalbar-left", "page-back", ImVec2(3, 30), ImVec2(16, 16));
+            at("###decalbar-left", "page-on", ImVec2(3, 68), ImVec2(16, 16));
+            const std::string side = first_switch("###decalbar-left");
+            if (!side.empty())
+                at("###decalbar-left", side.c_str(), ImVec2(1, 50), ImVec2(18, 20));
+            else
+                CHECK(!"no switch down the side");
+
+            // Expanded down the left: the gold square on the left of its top row, the grey on
+            // the right, the arrows either side of the middle; the switches from 30.
+            if (const ImRect* minmax = RectOf(WindowPath("###decalbar-left").Str("minmax")))
+                ClickAt(player, minmax->GetCenter());
+            Frame(player);
+            ImGuiWindow* wide = ImGui::FindWindowByName("###decalbar-left");
+            CHECK(wide != nullptr && std::fabs(wide->Size.x - 100.0f) < 0.5f);
+            at("###decalbar-left", "minmax", ImVec2(3, 12), ImVec2(16, 16));
+            at("###decalbar-left", "dock", ImVec2(81, 12), ImVec2(16, 16));
+            at("###decalbar-left", "page-back", ImVec2(33, 12), ImVec2(16, 16));
+            at("###decalbar-left", "page-on", ImVec2(51, 12), ImVec2(16, 16));
+            at("###decalbar-left", "grip-start", ImVec2(3, 2), ImVec2(94, 7));
+            const std::string labelled = first_switch("###decalbar-left");
+            if (!labelled.empty())
+                at("###decalbar-left", labelled.c_str(), ImVec2(1, 30), ImVec2(98, 20));
+            else
+                CHECK(!"no labelled switch down the side");
+
+            // Back along the top, compact, as the rest found it.
+            if (const ImRect* minmax = RectOf(WindowPath("###decalbar-left").Str("minmax")))
+                ClickAt(player, minmax->GetCenter());
+            for (const char* window : {"###decalbar-left", "###decalbar-right"})
+                if (const ImRect* dock = RectOf(WindowPath(window).Str("dock")))
+                    ClickAt(player, dock->GetCenter());
+            Frame(player);
+            CHECK(ImGui::FindWindowByName("###decalbar")->Active);
+            std::printf("20. Decal's bar by Inject.dll's own rectangles, along the top, down a side and expanded there\n");
+        }
+
+        std::printf("19. pictures cut from their art and labels in a face of their own, clicked and with tooltips;\n");
+        std::printf("   a console's link clicked; the cursor put in an edit box and Enter sent; a window resized by its\n");
+        std::printf("   frame from vvs.s3db's size, within its least; a hudified window stuck where vvs.s3db left it\n");
     }
 
     ImGui::DestroyContext();

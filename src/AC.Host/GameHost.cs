@@ -834,7 +834,9 @@ namespace AC.Host
                 return true;
             }
 
-            if (view == null || !view.Contains(command.ControlId))
+            // One of its controls, one of its own title-bar buttons - a HUD's add and remove - or
+            // a new size from its frame.
+            if (view == null || !view.Takes(command))
                 return false;
 
             try

@@ -83,7 +83,14 @@ namespace AC.Host.Plugins
         /// SpellBars; on IWorldView the ServerPopulation, AccountName and AccountCharacters; and
         /// IGameData.GetLevelExperience, the client's experience table, which has a default so
         /// another IGameData needs nothing. A session carried on now raises MessageSeen again for
-        /// the messages its world was built from, before the first one relayed.
+        /// the messages its world was built from, before the first one relayed. Also
+        /// IWorldView.Geometry, the world's solid geometry from the client's archives - ground,
+        /// walls, buildings, static objects and scenery - that a sphere can be swept through, for
+        /// Virindi Tank's projectile and wall check; it too has a default, null. And to views, what
+        /// VVS's own controls and windows did that Decal's did not: a Tooltip on any control; a
+        /// StaticText's FontFace, FontPoints, VerticalCenter and Clicked; the Picture and TextConsole
+        /// controls; an Edit's Entered and RequestFocus; and a DecalView's Location, its least and
+        /// most size and Resized, raised when the player resizes it by its frame.
         /// </remarks>
         public const int Version = 11;
 

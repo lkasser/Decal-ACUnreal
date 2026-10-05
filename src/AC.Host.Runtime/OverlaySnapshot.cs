@@ -82,6 +82,7 @@ namespace AC.Host.Runtime
             // client; and whoever is waiting for the next key the player presses.
             state.DefaultTheme = looks?.DefaultTheme ?? string.Empty;
             state.DecalBar = decalBar;
+            state.VvsBar = looks?.VvsBar;
             state.KeyCapture = host.KeyCaptureOwner ?? string.Empty;
 
             foreach (BoundHotkey hotkey in host.CollectHotkeys())

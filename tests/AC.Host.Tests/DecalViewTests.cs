@@ -55,6 +55,18 @@ namespace AC.Host.Tests
   </control>
 </view>";
 
+        /// <summary>
+        /// A view with VVS's own picture box and console, which Decal's XML never had and a VVS
+        /// plugin made in code - a Comps HUD row and a chat box.
+        /// </summary>
+        public const string Hud = @"<?xml version=""1.0""?>
+<view icon=""0"" title=""Comps HUD"" width=""62"" height=""60"">
+  <control progid=""DecalControls.FixedLayout"" clipped="""">
+    <control progid=""VirindiViewService.Controls.HudPictureBox"" name=""icon0"" left=""0"" top=""0"" width=""20"" height=""20"" image=""9770""/>
+    <control progid=""VirindiViewService.Controls.HudConsole"" name=""chat"" left=""0"" top=""20"" width=""62"" height=""40""/>
+  </control>
+</view>";
+
         /// <summary>A view with no notebook, as the smaller Decal plugins had.</summary>
         public const string Flat = @"<?xml version=""1.0""?>
 <view icon=""26075"" title=""Example Plugin"" width=""246"" height=""217"">

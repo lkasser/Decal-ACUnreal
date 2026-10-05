@@ -26,6 +26,15 @@ namespace AC.Host.Plugins.Views
 
         /// <summary>A list cell was clicked; the row id is the row index and the value the column index.</summary>
         public const string Click = "click";
+
+        /// <summary>
+        /// The player gave the window a new size, by its frame: no control, and the value its
+        /// width and height in Decal pixels, "500,175".
+        /// </summary>
+        public const string Resize = "resize";
+
+        /// <summary>The player pressed Enter in an edit box; the value is its text, as with <see cref="Set"/>.</summary>
+        public const string Enter = "enter";
     }
 
     /// <summary>
@@ -219,6 +228,33 @@ namespace AC.Host.Plugins.Views
 
         public int Height { get; set; }
 
+        /// <summary>
+        /// The smallest the player may make a window they can resize, in Decal pixels: VVS's
+        /// MinimumClientArea, 100 by 100 unless the plugin said otherwise.
+        /// </summary>
+        public int MinWidth { get; set; } = 100;
+
+        public int MinHeight { get; set; } = 100;
+
+        /// <summary>The largest: VVS's MaximumClientArea, 1000 by 1000 unless the plugin said otherwise.</summary>
+        public int MaxWidth { get; set; } = 1000;
+
+        public int MaxHeight { get; set; } = 1000;
+
+        /// <summary>
+        /// Where on screen the window first opens, as VVS's view.Location put it - unless the
+        /// player's vvs.s3db says where they left it hudified. Null leaves it to the overlay.
+        /// </summary>
+        public (int X, int Y)? Location { get; set; }
+
+        /// <summary>
+        /// The player gave the window a new size, by its frame, or the overlay gave it the size
+        /// the player left it at: <see cref="Width"/> and <see cref="Height"/> are already set,
+        /// as VVS's Resize came after the size had changed. A plugin that lays its controls out
+        /// by the window's size does it again here.
+        /// </summary>
+        public event EventHandler Resized;
+
         /// <summary>The outermost control: a Notebook or a FixedLayout, in every view seen so far.</summary>
         public ViewControl Root { get; }
 
@@ -329,6 +365,8 @@ namespace AC.Host.Plugins.Views
                 : type == typeof(Slider) ? new Slider("DecalControls.Slider", name)
                 : type == typeof(List) ? new List("DecalControls.List", name)
                 : type == typeof(Progress) ? new Progress("DecalControls.Progress", name)
+                : type == typeof(Picture) ? new Picture("VirindiViewService.Controls.HudPictureBox", name)
+                : type == typeof(TextConsole) ? new TextConsole("VirindiViewService.Controls.HudConsole", name)
                 : throw new ArgumentException($"A {type.Name} cannot be added at run time.", nameof(T));
 
             control.Left = left;
@@ -407,6 +445,60 @@ namespace AC.Host.Plugins.Views
         /// </remarks>
         public bool Apply(OverlayCommand command) => Apply(command, out _);
 
+        /// <summary>
+        /// Whether a command is this view's to take: it names one of its controls or one of its
+        /// title-bar buttons, or it is a new size for the window.
+        /// </summary>
+        public bool Takes(OverlayCommand command)
+        {
+            if (command == null)
+                return false;
+            if (Contains(command.ControlId))
+                return true;
+            if (command.ControlId.Length == 0)
+                return string.Equals(command.Name, ViewVerbs.Resize, StringComparison.Ordinal);
+            foreach (ViewTitleButton button in TitleButtons)
+            {
+                if (button != null && string.Equals(button.Name, command.ControlId, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Sets the size the player gave the window, kept within its least and most, and raises
+        /// <see cref="Resized"/> when that changed it. False for a value that is not "width,height".
+        /// </summary>
+        private bool Resize(string value, out string refusal)
+        {
+            string[] parts = (value ?? string.Empty).Split(',');
+            if (!Resizeable)
+            {
+                refusal = $"the view '{Title}' cannot be resized";
+                return false;
+            }
+
+            if (parts.Length != 2
+                || !int.TryParse(parts[0], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int width)
+                || !int.TryParse(parts[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int height))
+            {
+                refusal = $"'{value}' is not a width and a height";
+                return false;
+            }
+
+            width = Math.Min(Math.Max(width, MinWidth), Math.Max(MinWidth, MaxWidth));
+            height = Math.Min(Math.Max(height, MinHeight), Math.Max(MinHeight, MaxHeight));
+            refusal = null;
+            if (width == Width && height == Height)
+                return true;
+
+            Width = width;
+            Height = height;
+            Resized?.Invoke(this, EventArgs.Empty);
+            return true;
+        }
+
         /// <summary><see cref="Apply(OverlayCommand)"/>, saying why when it refuses.</summary>
         internal bool Apply(OverlayCommand command, out string refusal)
         {
@@ -415,6 +507,9 @@ namespace AC.Host.Plugins.Views
                 refusal = "there was no command";
                 return false;
             }
+
+            if (command.ControlId.Length == 0 && string.Equals(command.Name, ViewVerbs.Resize, StringComparison.Ordinal))
+                return Resize(command.Value, out refusal);
 
             if (!_byName.TryGetValue(command.ControlId, out ViewControl control))
             {

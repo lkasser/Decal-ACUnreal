@@ -47,7 +47,8 @@ src/AC.Protocol        AC wire framing: packet and fragment headers, optional se
 src/AC.Proxy           The UDP relay, and a capture format for replaying sessions offline.
 src/AC.Proxy.Cli       `acproxy`: run the relay, or replay a capture through the parser.
 src/AC.Dat             Reader for the client's data files (portal and cell DATs, spells, skills,
-                       palettes, images) and for Virindi View Service's window store.
+                       palettes, images, and the world's solid geometry: ground, buildings,
+                       rooms, models and scenery) and for Virindi View Service's window store.
 src/AC.Host            The plugin host: IPlugin/IHost contract, world model, decoders,
                        transports, loader, game thread, and the actions plugins can take.
 src/AC.Host.Runtime    The whole host as achost and Decal Agent start it: relay, plugins,
@@ -81,11 +82,11 @@ dotnet build Decal-ACUnreal.slnx
 dotnet test Decal-ACUnreal.slnx
 ```
 
-About 840 tests: AC.Protocol 58, AC.Proxy 72, AC.Dat 31, AC.Overlay 58, Setup 63 and AC.Host 555.
+About 860 tests: AC.Protocol 58, AC.Proxy 72, AC.Dat 44, AC.Overlay 62, Setup 63 and AC.Host 561.
 Some read files that are never committed and skip cleanly without them: the AC.Dat tests that
-read a real `client_portal.dat` (they look in `C:\ACE\Dats` and the usual Turbine folders), and
-the AC.Host tests that replay session captures (`*.acap`), which hold account names and so are
-never committed.
+read a real `client_portal.dat` and `client_cell_1.dat` (they look in `C:\ACE\Dats` and the usual
+Turbine folders), and the AC.Host tests that replay session captures (`*.acap`), which hold
+account names and so are never committed.
 
 The overlay is built separately, and needs MSVC:
 
