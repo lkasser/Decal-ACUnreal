@@ -141,10 +141,14 @@ namespace Decal.Compat
     /// Plugins are found where Decal found them - every entry under Decal's Plugins key, each
     /// ticked or not as in Decal's own list and loaded from where it is installed - and in a
     /// folder of this plugin's own: "Decal Plugins" in its data directory unless the setting
-    /// DecalCompat:Folder names another, laid out as the host's plugins are.
+    /// DecalCompat:Folder names another, laid out as the host's plugins are, where a plugin needs
+    /// no registry entry and is treated as a registered one's working copy is
+    /// (<see cref="DecalPluginLoadContext"/>) - Mag-Filter, built from its sources, goes there.
     /// DecalCompat:Registry=false leaves Decal's registry alone; DecalCompat:Skip names plugins
     /// to leave out; DecalCompat:VirindiViewService=false hides VVS, so plugins fall back to
-    /// Decal's own views.
+    /// Decal's own views; DecalCompat:UserFolders names a folder to stand in for the player's
+    /// Documents and the rest, where plugins such as Mag-Tools keep their files - the real ones
+    /// otherwise.
     /// </para>
     ///
     /// <para>
@@ -158,10 +162,12 @@ namespace Decal.Compat
     /// Each Decal plugin can be switched off, on or reloaded while the host runs, as the host's
     /// own plugins can, and the choice is remembered in this plugin's own settings - for a
     /// registered one, only where it differs from Decal's tick, and never in Decal's registry.
+    /// One switched on while the host runs is told what the others were told as they started:
+    /// that everything is up and, in the world, that the character has logged in.
     /// Everything happens on the game thread, as it does for every plugin.
     /// </para>
     /// </remarks>
-    public sealed class DecalCompatPlugin : IPlugin, IOverlayViews, IHostedPlugins, IChatCommands
+    public sealed class DecalCompatPlugin : IPlugin, IOverlayViews, IHostedPlugins, IChatCommands, IOverlayHotkeys
     {
         /// <summary>The name it goes by; "Decal" is the host's own window.</summary>
         public const string PluginName = "DecalCompat";
@@ -171,7 +177,7 @@ namespace Decal.Compat
         private IHost _host;
         private DecalRuntime _runtime;
         private PluginSettings<DecalCompatSettings> _settings;
-        private Dictionary<string, Assembly> _shims;
+        private Dictionary<string, Func<Assembly>> _shims;
         private string _copyRoot;
         private string _workingRoot;
 
@@ -185,6 +191,7 @@ namespace Decal.Compat
         private bool _readRegistry;
         private HashSet<string> _skip;
         private PluginDialogs _dialogs;
+        private readonly HashSet<System.Threading.Timer> _timers = new HashSet<System.Threading.Timer>();
 
         /// <summary>How many faults an entry keeps for its status: enough to say what is wrong, not a log.</summary>
         private const int FaultsKept = 3;
@@ -237,9 +244,11 @@ namespace Decal.Compat
             _runtime = new DecalRuntime(host)
             {
                 VirindiViewServiceRunning = !IsFalse(host.GetSetting(this, "VirindiViewService")),
+                Owner = this,
             };
             _runtime.ViewsChanged += (_, _) => _windows = null;
             _runtime.Tick += OnTick;
+            _runtime.Later = Later;
             _runtime.Faulted += OnFaulted;
             _runtime.ChatShown += OnChatShown;
 
@@ -256,16 +265,29 @@ namespace Decal.Compat
             // Plugins look for Virindi View Service among the assemblies already loaded before
             // they touch it, so it has to be loaded before they start.
             RuntimeHelpers.RunClassConstructor(typeof(VirindiViewService.Service).TypeHandle);
+            VirindiHotkeySystem.VHotkeySystem.InstanceReal.HotkeyListChanged += OnHotkeysChanged;
+            _hotkeys = null;
 
-            _shims = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase)
+            _shims = new Dictionary<string, Func<Assembly>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["Decal.Adapter"] = typeof(PluginBase).Assembly,
-                ["VirindiViewService"] = typeof(VirindiViewService.Service).Assembly,
-                ["Decal.FileService"] = typeof(Decal.Filters.FileService).Assembly,
-                ["Decal.Interop.Core"] = typeof(Decal.Interop.Core.IPluginSite2).Assembly,
+                ["Decal.Adapter"] = () => typeof(PluginBase).Assembly,
+                ["VirindiViewService"] = () => typeof(VirindiViewService.Service).Assembly,
+                ["Decal.FileService"] = () => typeof(Decal.Filters.FileService).Assembly,
+                ["Decal.Interop.Core"] = () => typeof(Decal.Interop.Core.IPluginSite2).Assembly,
+                // Virindi Hotkey System, whose job the host's hotkey windows do: Mag-Tools binds
+                // its hotkeys through it at login (IOverlayHotkeys, below).
+                ["VirindiHotkeySystem"] = () => typeof(VirindiHotkeySystem.VHotkeySystem).Assembly,
+                // Virindi HUDs' Status HUD, which Virindi Tank draws: Mag-Tools puts its rows on it.
+                // Loaded only for a plugin that names it, since Virindi Reporter and Sense feed it
+                // whenever they find it loaded, and Virindi Tank already shows Reporter's rows.
+                ["VirindiHUDs"] = StatusHud,
+                // Virindi Tank's API for other plugins, answering as it did with no loot profile:
+                // Mag-Tools' looter asks it about every open container. Loaded only when asked for,
+                // for Integrator2 and Item Tool look for it among the loaded assemblies.
+                ["uTank2"] = TankApi,
                 // Managed DirectX's maths, which plugins that draw for themselves - Integrator2's
                 // map - work out their transforms with, and VVS's DxTexture takes.
-                ["Microsoft.DirectX"] = typeof(Microsoft.DirectX.Matrix).Assembly,
+                ["Microsoft.DirectX"] = () => typeof(Microsoft.DirectX.Matrix).Assembly,
             };
 
             string data = host.GetDataDirectory(this);
@@ -273,6 +295,10 @@ namespace Decal.Compat
             _workingRoot = Path.Combine(data, "Registered");
             // A registered plugin reading its own Path from Decal's registry is told its working copy.
             Decal.Adapter.Hosting.PluginRegistry.FolderFor = WorkingFolderFor;
+
+            // The player's Documents and the rest, where plugins keep what is the player's - the
+            // real ones, unless the host was given a folder to stand in for them.
+            Decal.Adapter.Hosting.PluginFolders.Root = host.GetSetting(this, "UserFolders");
 
             _nativeFolders = new[]
             {
@@ -320,9 +346,19 @@ namespace Decal.Compat
             _runtime?.Dispose();
             _runtime = null;
             _windows = null;
+            VirindiHotkeySystem.VHotkeySystem.InstanceReal.HotkeyListChanged -= OnHotkeysChanged;
+            VirindiHotkeySystem.VHotkeySystem.InstanceReal.Release(_ => true);
+            _hotkeys = null;
+            lock (_timers)
+            {
+                foreach (System.Threading.Timer timer in _timers)
+                    timer.Dispose();
+                _timers.Clear();
+            }
             _dialogs?.Dispose();
             _dialogs = null;
             Decal.Adapter.Hosting.PluginRegistry.FolderFor = null;
+            Decal.Adapter.Hosting.PluginFolders.Root = null;
             TryDelete(_copyRoot);
         }
 
@@ -433,6 +469,76 @@ namespace Decal.Compat
         /// <summary>A command from elsewhere in the host, offered to the Decal plugins as though typed.</summary>
         public bool TryCommand(string text) => InvokeCommandLine(text);
 
+        /// <summary>
+        /// Decal plugins' command words this host knows, by the plugin's class id or assembly file.
+        /// A Decal plugin never says which words are its own, so a line typed for one went to the
+        /// server - "/mt face 90" said aloud - unless the player listed the word in
+        /// "Decal:CommandWords"; these need no listing.
+        /// </summary>
+        private static readonly (string Clsid, string AssemblyFileName, string[] Words)[] KnownWords =
+        {
+            ("{959D5CA6-0BD5-48A2-9AD2-F95F94DCDC3E}", "MagTools.dll", new[] { "mt" }),
+            // Mag-Filter, a network filter: Decal listed filters apart from its plugins, so it is
+            // known by its file alone - as third_party\Mag-Filter builds it, into the folder.
+            (null, "MagFilter.dll", new[] { "mf" }),
+        };
+
+        /// <summary>
+        /// The command words of the Decal plugins listed that are known to have some (<see cref="KnownWords"/>)
+        /// and can run here, switched on or not: a line typed for one is kept from the server, and
+        /// said to be untaken if its plugin is off.
+        /// </summary>
+        public IReadOnlyCollection<string> CommandWords
+            => _entries.Where(e => e.CanRun)
+                .SelectMany(e => KnownWords.Where(k => Replacements.SameClsid(e.Clsid, k.Clsid)
+                                                       || (e.AssemblyPath != null && string.Equals(Path.GetFileName(e.AssemblyPath), k.AssemblyFileName, StringComparison.OrdinalIgnoreCase)))
+                                           .SelectMany(k => k.Words))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+        // ------------------------------------------------------------------- hotkeys
+
+        private HotkeyDefinition[] _hotkeys;
+
+        /// <summary>
+        /// The hotkeys Decal plugins added to Virindi Hotkey System, which the host's hotkey windows
+        /// list and bind as they do every plugin's own, under the name each was added with:
+        /// "vhs/Mag-Tools/Pack Inventory". The key suggested is the one it was made with.
+        /// </summary>
+        public IReadOnlyList<HotkeyDefinition> Hotkeys
+            => _hotkeys ??= VirindiHotkeySystem.VHotkeySystem.InstanceReal.AllHotkeys
+                .Select(h => new HotkeyDefinition(HotkeyId(h), h.Description, DefaultKeys(h), h.HotkeyName, h.AssemblyName))
+                .ToArray();
+
+        /// <summary>A key bound to one of a Decal plugin's hotkeys was pressed: its handlers are told, as VHS told them.</summary>
+        public void HotkeyPressed(string id)
+        {
+            VirindiHotkeySystem.VHotkeyInfo hotkey = VirindiHotkeySystem.VHotkeySystem.InstanceReal.AllHotkeys.FirstOrDefault(h => HotkeyId(h) == id);
+            if (hotkey == null || !hotkey.Enabled || _runtime == null)
+                return;
+
+            try
+            {
+                VirindiHotkeySystem.VHotkeySystem.InstanceReal.Press(hotkey);
+            }
+            catch (Exception ex)
+            {
+                DecalPluginEntry entry = EntryOf(hotkey.Owner);
+                DecalFailure failure = entry == null ? null : DecalFailure.Explain(ex, entry.Facts, entry.Context?.NativeProblems, Path.GetDirectoryName(entry.AssemblyPath));
+                _host.Log.Error($"Decal plugin {entry?.Name ?? hotkey.AssemblyName}'s hotkey \"{hotkey.HotkeyName}\" failed.", DecalFailure.Unwrap(ex));
+                if (entry != null)
+                    AddFault(entry, $"{When(entry)}its hotkey \"{hotkey.HotkeyName}\" failed: {failure?.Detail ?? "it threw."}");
+            }
+        }
+
+        private static string HotkeyId(VirindiHotkeySystem.VHotkeyInfo hotkey) => "vhs/" + hotkey.AssemblyName + "/" + hotkey.HotkeyName;
+
+        /// <summary>The key a hotkey was made with, as the host writes keys; none for a mouse button or no key.</summary>
+        private static string DefaultKeys(VirindiHotkeySystem.VHotkeyInfo hotkey)
+            => hotkey.VirtualKey is >= 1 and <= 254 ? new KeyChord(hotkey.VirtualKey, hotkey.ControlState, hotkey.ShiftState, hotkey.AltState).ToString() : string.Empty;
+
+        private void OnHotkeysChanged(object sender, EventArgs e) => _hotkeys = null;
+
         // ------------------------------------------------------------------- finding
 
         /// <summary>
@@ -528,10 +634,17 @@ namespace Decal.Compat
                 StartPrepared(entry, filters: false);
 
             foreach (DecalPluginEntry entry in loaded)
-                Settle(entry);
+            {
+                if (Settle(entry))
+                    _runtime.CatchUp(entry.Extensions.ToArray());
+            }
         }
 
-        /// <summary>Loads and starts one Decal plugin assembly, filters first.</summary>
+        /// <summary>
+        /// Loads and starts one Decal plugin assembly, filters first, and - since the others were
+        /// told long ago - tells it that everything is up and, in the world, that the character
+        /// has logged in (<see cref="DecalRuntime.CatchUp"/>).
+        /// </summary>
         private bool Load(DecalPluginEntry entry)
         {
             if (!Prepare(entry))
@@ -539,7 +652,11 @@ namespace Decal.Compat
 
             StartPrepared(entry, filters: true);
             StartPrepared(entry, filters: false);
-            return Settle(entry);
+            if (!Settle(entry))
+                return false;
+
+            _runtime.CatchUp(entry.Extensions.ToArray());
+            return true;
         }
 
         /// <summary>
@@ -560,8 +677,11 @@ namespace Decal.Compat
                 load = Path.Combine(entry.WorkingDirectory, Path.GetFileName(entry.AssemblyPath));
             }
 
+            // A registered plugin's working copy is treated already; one from the folder is treated
+            // as it loads, from a corrected copy when that changes anything.
             string copy = Path.Combine(_copyRoot, Path.GetFileNameWithoutExtension(entry.AssemblyPath) + "-" + Guid.NewGuid().ToString("N").Substring(0, 12));
-            DecalPluginLoadContext context = new DecalPluginLoadContext(entry.Name, _shims, Path.GetDirectoryName(load), copy, RunningPluginAssembly, _nativeFolders);
+            DecalPluginLoadContext context = new DecalPluginLoadContext(entry.Name, _shims, Path.GetDirectoryName(load), copy, RunningPluginAssembly, _nativeFolders,
+                                                                        treat: !entry.IsRegistered);
 
             Assembly assembly;
             try
@@ -578,6 +698,10 @@ namespace Decal.Compat
 
             if (context.CopiedForX86)
                 _host.Log.Info($"Decal plugin {entry.AssemblyPath} was built for x86 only, so it runs from a corrected copy; files it writes beside itself are lost when it stops.");
+            if (context.CopiedTreated)
+                _host.Log.Info($"Decal plugin {entry.AssemblyPath} runs from a copy with its calls of the player's folders, the XML serializer, Decal.dll and the registry pointed at this host's, as a registered plugin's working copy has them; files it writes beside itself are lost when it stops.");
+            foreach (string problem in context.TreatProblems)
+                _host.Log.Warn($"Decal plugin {entry.Name}: {problem}.");
 
             List<Type> types = new List<Type>();
             try
@@ -646,6 +770,14 @@ namespace Decal.Compat
             }
 
             entry.WorkingDirectory = working;
+
+            // The host's own install falling short is said on its own, as a warning, every start
+            // until it is put right: the plugin runs, but not as it should.
+            List<string> incomplete = problems.Where(p => p.Contains(WorkingCopy.HostAssemblyMissing, StringComparison.Ordinal)).ToList();
+            problems = problems.Except(incomplete).ToList();
+            foreach (string line in incomplete)
+                _host.Log.Warn($"Decal plugin {entry.Name}'s working copy: {line}");
+
             if (first)
                 _host.Log.Info($"Decal plugin {entry.Name} runs from a working copy of {install}, in {working}: it finds its files there and keeps what it writes there, and the install is only read."
                     + (problems.Count == 0 ? string.Empty : " " + string.Join(" ", problems)));
@@ -749,13 +881,18 @@ namespace Decal.Compat
                 AddFault(entry, $"{When(entry)}it showed a message box: {DecalFailure.ExplainText(text)}");
         }
 
-        /// <summary>A line a Decal plugin put in chat: a fault, when it reads as one of its own exceptions.</summary>
+        /// <summary>
+        /// A line a Decal plugin put in chat: a fault, when it reads as one of its own exceptions -
+        /// the fault of the plugin whose code began the call, not of one it printed through:
+        /// Mag-Tools puts its lines in the chat through Virindi Chat System, whose code is the
+        /// nearer on the stack, and its exceptions are its own.
+        /// </summary>
         private void OnChatShown(object sender, string text)
         {
             if (!DecalFailure.LooksLikeFault(text))
                 return;
 
-            DecalPluginEntry entry = EntryOfCaller();
+            DecalPluginEntry entry = EntryOfCaller(outermost: true);
             if (entry != null)
                 AddFault(entry, $"{When(entry)}it reported in chat that {DecalFailure.ExplainText(text)}");
         }
@@ -792,17 +929,25 @@ namespace Decal.Compat
             }
         }
 
-        /// <summary>The entry whose code is on the stack, innermost first.</summary>
-        private DecalPluginEntry EntryOfCaller()
+        /// <summary>
+        /// The entry whose code is on the stack: the innermost, or with <paramref name="outermost"/>
+        /// the one whose code the call began in.
+        /// </summary>
+        private DecalPluginEntry EntryOfCaller(bool outermost = false)
         {
+            DecalPluginEntry found = null;
             foreach (StackFrame frame in new StackTrace(false).GetFrames())
             {
                 DecalPluginEntry entry = EntryOf(frame.GetMethod()?.DeclaringType?.Assembly);
-                if (entry != null)
-                    return entry;
+                if (entry == null)
+                    continue;
+
+                found = entry;
+                if (!outermost)
+                    break;
             }
 
-            return null;
+            return found;
         }
 
         /// <summary>The entry that loaded an assembly, its own or one of its dependencies.</summary>
@@ -878,6 +1023,11 @@ namespace Decal.Compat
             entry.Extensions.Clear();
             entry.Pending.Clear();
 
+            // Its hotkeys go with it: they hold its handlers, and with them its code.
+            DecalPluginLoadContext context = entry.Context;
+            if (context != null)
+                VirindiHotkeySystem.VHotkeySystem.InstanceReal.Release(a => ReferenceEquals(System.Runtime.Loader.AssemblyLoadContext.GetLoadContext(a), context));
+
             try
             {
                 entry.Context?.Unload();
@@ -911,6 +1061,33 @@ namespace Decal.Compat
         }
 
         // ------------------------------------------------------------------- the tick
+
+        /// <summary>
+        /// Runs something on the game thread after a delay - a turn key let go between ticks. The
+        /// timers are kept until they fire, since one nobody holds can be collected unfired, and
+        /// one that fires after Decal has stopped does nothing.
+        /// </summary>
+        private void Later(TimeSpan delay, Action action)
+        {
+            IHost host = _host;
+            DecalRuntime runtime = _runtime;
+            System.Threading.Timer timer = null;
+            timer = new System.Threading.Timer(_ =>
+            {
+                lock (_timers)
+                    _timers.Remove(timer);
+                timer?.Dispose();
+                host.RunOnGameThread(() =>
+                {
+                    if (ReferenceEquals(_runtime, runtime))
+                        action();
+                });
+            });
+
+            lock (_timers)
+                _timers.Add(timer);
+            timer.Change(delay < TimeSpan.Zero ? TimeSpan.Zero : delay, System.Threading.Timeout.InfiniteTimeSpan);
+        }
 
         /// <summary>
         /// Lets the game thread's window messages through, for Decal plugins that brought Windows
@@ -959,6 +1136,14 @@ namespace Decal.Compat
         private void OnChanged() => Changed?.Invoke(this, EventArgs.Empty);
 
         // ------------------------------------------------------------------- housekeeping
+
+        /// <summary>The Virindi HUDs stand-in, loaded here and nowhere sooner.</summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static Assembly StatusHud() => typeof(VirindiHUDs.UIs.StatusModel).Assembly;
+
+        /// <summary>The uTank2 stand-in, loaded here and nowhere sooner.</summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static Assembly TankApi() => typeof(uTank2.PluginCore).Assembly;
 
         /// <summary>The messages.xml in Decal's install directory, as its registry names it; null with no install.</summary>
         private string InstalledMessagesFile()

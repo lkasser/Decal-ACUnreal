@@ -42,6 +42,11 @@
     <!-- A Decal plugin that goes wrong as Virindi's do here, installed apart from the folder
          above, where tests point a stand-in for Decal's registry at it. -->
     <ProjectReference Include="..\decal-plugins\TroubledPlugin\TroubledPlugin.csproj" ReferenceOutputAssembly="false" OutputItemType="DecalRegisteredFixture" />
+    <!-- Mag-Filter, built from Mag-nus's own sources against the stand-ins, once
+         third_party\Mag-Filter\fetch.ps1 has fetched them - they are not in this repository - and
+         copied to mag-filter/; its tests skip without it. -->
+    <ProjectReference Include="..\..\third_party\Mag-Filter\MagFilter.csproj" ReferenceOutputAssembly="false" OutputItemType="MagFilterFixture"
+                      Condition="Exists('..\..\third_party\Mag-Filter\upstream\Mag-Filter\FilterCore.cs')" />
   </ItemGroup>
 
   <ItemGroup>
@@ -57,6 +62,7 @@
   <Target Name="CopyDecalPluginFixtures" AfterTargets="Build">
     <Copy SourceFiles="@(DecalPluginFixture)" DestinationFolder="$(OutDir)decal-plugins\%(Filename)" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(DecalRegisteredFixture)" DestinationFolder="$(OutDir)decal-registered\%(Filename)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(MagFilterFixture)" DestinationFolder="$(OutDir)mag-filter" SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>

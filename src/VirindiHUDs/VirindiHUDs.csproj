@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>VirindiHUDs</RootNamespace>
+    <AssemblyName>VirindiHUDs</AssemblyName>
+    <Description>Virindi HUDs' plugin API - the Status HUD's StatusModel - for Decal plugins that put rows on it, as Mag-Tools does; the rows go to the Status HUD the AC host's Virindi Tank shows.</Description>
+    <!-- The version Mag-Tools was built against, and the last one released; Virindi Reporter's
+         and Sense's connectors want 1.0.0.5 or later. VHUDs was never strong-named. -->
+    <AssemblyVersion>1.0.0.18</AssemblyVersion>
+    <FileVersion>1.0.0.18</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The rows go through the running Decal to the host. -->
+    <ProjectReference Include="..\Decal.Adapter\Decal.Adapter.csproj" />
+    <ProjectReference Include="..\AC.Host\AC.Host.csproj">
+      <!-- The host is already loaded when the shim is; it must not ship a second copy. -->
+      <Private>false</Private>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

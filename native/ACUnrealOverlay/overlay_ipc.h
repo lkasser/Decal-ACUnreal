@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -84,6 +85,16 @@ class Ipc {
     // The keys the host last asked to have held down, by virtual-key code, and how long ago
     // it asked. Empty while disconnected: a host that has gone holds nothing.
     void WantedKeys(std::vector<uint16_t>& keys, uint64_t& age_ms) const noexcept;
+
+    // A click the host asked for that has not been taken yet: true once for each, and copied
+    // into click. A host repeats a click for a moment so a lost frame cannot lose it; its id is
+    // what makes one click one.
+    bool TakeClick(Click& click) noexcept;
+
+    // Called on the pipe's own thread whenever the wanted keys change - a new set from the
+    // host, or none because it went - so whoever presses them need not wait for its next look.
+    // Set it before Start(); it must be quick and must not throw, since it runs between reads.
+    void SetKeysListener(std::function<void()> listener) noexcept;
 
  private:
     struct Impl;

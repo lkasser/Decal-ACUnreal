@@ -8,15 +8,23 @@ namespace AC.Host.Transport
     /// <summary>A complete game message, and which way it was going.</summary>
     public sealed class GameMessageEventArgs : EventArgs
     {
-        public GameMessageEventArgs(PacketDirection direction, AcMessage message)
+        public GameMessageEventArgs(PacketDirection direction, AcMessage message, bool fromHost = false)
         {
             Direction = direction;
             Message = message;
+            FromHost = fromHost;
         }
 
         public PacketDirection Direction { get; }
 
         public AcMessage Message { get; }
+
+        /// <summary>
+        /// Whether a message going to the server is one the host sent as the client - a plugin's
+        /// appraisal, a use - rather than one the client sent itself. The relay sees both go on
+        /// in the client's packets; only the client's say what the player did.
+        /// </summary>
+        public bool FromHost { get; }
     }
 
     /// <summary>

@@ -157,8 +157,12 @@ namespace Decal.Adapter.Wrappers
             _runtime = runtime;
         }
 
-        /// <summary>The client's window. The host is another process and has none.</summary>
-        public IntPtr Hwnd => IntPtr.Zero;
+        /// <summary>
+        /// The client's window, as plugins post keys to it: a window of this host's own standing in
+        /// for the client's, which is another process's and not to be moved or closed by a plugin;
+        /// the keys posted to it are pressed in the game (<see cref="ClientWindow"/>).
+        /// </summary>
+        public IntPtr Hwnd => _runtime.ClientWindow.Handle;
 
         public bool Focus => false;
 

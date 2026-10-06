@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Loader;
+using AC.Host.Decoding;
 using AC.Host.Plugins;
 using AC.Host.Plugins.Views;
 using AC.Host.Transport;
@@ -48,7 +50,13 @@ namespace Decal.Adapter.Hosting
         private readonly Dictionary<uint, Enchantment> _enchantments = new Dictionary<uint, Enchantment>();
         private readonly uint[] _lastVitals = new uint[3];
         private string _starting;
+
+        /// <summary>The character the host has named whose Login waits for its description; 0 when none does.</summary>
+        private uint _entering;
         private uint _loggedInAs;
+
+        /// <summary>Whether the client has said, this login, that it has finished entering the world.</summary>
+        private bool _clientEntered;
         private bool _loginCompleteRaised;
         private uint _lastSelection;
         private long _lastTotalXp;
@@ -56,6 +64,9 @@ namespace Decal.Adapter.Hosting
         private readonly HashSet<uint> _knownSpells = new HashSet<uint>();
         private bool _countingChanges;
         private MessageSchema _messages;
+        private string _declinedLine;
+        private bool _startupCompleted;
+        private uint _openedContainer;
         private readonly HashSet<string> _messageFaultsSaid = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<(int Type, int Kind, MessageDirection Direction)> _unfitSaid = new HashSet<(int, int, MessageDirection)>();
         private bool _disposed;
@@ -66,6 +77,8 @@ namespace Decal.Adapter.Hosting
 
             Core = new CoreManager(this);
             Site = new DecalPluginSite(this);
+            ClientWindow = new ClientWindow(this);
+            Facing = new Facing(this);
 
             _host.ObjectCreated += OnObjectCreated;
             _host.ObjectUpdated += OnObjectUpdated;
@@ -73,9 +86,11 @@ namespace Decal.Adapter.Hosting
             _host.ObjectMoved += OnObjectMoved;
             _host.ObjectRemoved += OnObjectRemoved;
             _host.ContainerViewed += OnContainerViewed;
+            _host.ContainerClosed += OnContainerClosed;
             _host.ChatReceived += OnChatReceived;
             _host.PlayerIdentified += OnPlayerIdentified;
             _host.LoggedOff += OnLoggedOff;
+            _host.LoggingOff += OnLoggingOff;
             _host.CharacterUpdated += OnCharacterUpdated;
             _host.EnchantmentChanged += OnEnchantmentChanged;
             _host.EnchantmentRemoved += OnEnchantmentRemoved;
@@ -101,6 +116,19 @@ namespace Decal.Adapter.Hosting
         public IHost Host => _host;
 
         public CoreManager Core { get; }
+
+        /// <summary>The window Decal.Hwnd names, and the keys plugins post to it.</summary>
+        public ClientWindow ClientWindow { get; }
+
+        /// <summary>
+        /// Runs something on the game thread after a delay, so a key can be let go between ticks -
+        /// a turn's pulse, which in a tick turns eighteen degrees. Set by whoever runs Decal; without
+        /// it keys are let go on the tick.
+        /// </summary>
+        public Action<TimeSpan, Action> Later { get; set; }
+
+        /// <summary>Decal's FaceHeading, turning the character by the game's keys.</summary>
+        internal Facing Facing { get; }
 
         /// <summary>Every window a Decal plugin has open, in the order they were opened.</summary>
         public IReadOnlyList<HostedView> Views => _views;
@@ -230,6 +258,7 @@ namespace Decal.Adapter.Hosting
         /// </summary>
         public void CompleteStartup()
         {
+            _startupCompleted = true;
             Core.OnFilterInitComplete();
             Core.OnServiceInitComplete();
 
@@ -238,8 +267,61 @@ namespace Decal.Adapter.Hosting
 
             Core.OnPluginInitComplete();
 
-            if (_host.Character.Id != 0)
+            // A character already in the world logged in before Decal was here to hear it: its
+            // description and the client's word that it had arrived have gone by, so both events
+            // come at once. One whose login Decal has seen begin goes on as any login does.
+            if (_host.Character.Id != 0 && _entering == 0 && _loggedInAs == 0)
+            {
+                _clientEntered = true;
                 RaiseLogin(_host.Character.Id);
+            }
+        }
+
+        /// <summary>
+        /// Tells extensions started after <see cref="CompleteStartup"/> - a plugin switched on, or
+        /// reloaded, while the host runs - what the others were told then: the init-complete
+        /// events, and with the character in the world its Login, and its LoginComplete if the
+        /// others have had theirs. Raised to their own handlers alone; nothing before
+        /// <see cref="CompleteStartup"/>, which tells them itself.
+        /// </summary>
+        /// <remarks>
+        /// Decal loaded its plugins as the client started, so every plugin heard all of these;
+        /// one that missed them waits for ever for what it set up its windows and its login
+        /// work on. Mag-Tools makes its window on PluginInitComplete and starts its timers,
+        /// hotkeys and status rows on LoginComplete. A handler is the extensions' when its code
+        /// is in their assembly - or, for a plugin in a load context of its own, in that context.
+        /// </remarks>
+        public void CatchUp(IReadOnlyCollection<Extension> started)
+        {
+            if (!_startupCompleted || started == null || started.Count == 0)
+                return;
+
+            HashSet<Assembly> assemblies = new HashSet<Assembly>(started.Select(e => e.GetType().Assembly));
+            HashSet<AssemblyLoadContext> contexts = new HashSet<AssemblyLoadContext>(
+                assemblies.Select(AssemblyLoadContext.GetLoadContext).Where(c => c != null && c != AssemblyLoadContext.Default));
+            bool Theirs(Assembly assembly)
+                => assembly != null && (assemblies.Contains(assembly) || contexts.Contains(AssemblyLoadContext.GetLoadContext(assembly)));
+
+            Core.CatchUpInitComplete(Theirs, started.OfType<ServiceBase>().ToList());
+
+            if (_loggedInAs != 0)
+                Core.CharacterFilter.CatchUpLogin(Theirs, unchecked((int)_loggedInAs), _loginCompleteRaised);
+        }
+
+        /// <summary>The subscribers of an event whose code <paramref name="theirs"/> picks out; null when there are none.</summary>
+        internal static TDelegate Only<TDelegate>(TDelegate handler, Func<Assembly, bool> theirs) where TDelegate : Delegate
+        {
+            if (handler == null)
+                return null;
+
+            Delegate kept = null;
+            foreach (Delegate subscriber in handler.GetInvocationList())
+            {
+                if (theirs(subscriber.Method.Module.Assembly) || theirs(subscriber.Target?.GetType().Assembly))
+                    kept = Delegate.Combine(kept, subscriber);
+            }
+
+            return (TDelegate)kept;
         }
 
         /// <summary>Stops one extension: its Shutdown, then its windows.</summary>
@@ -270,6 +352,57 @@ namespace Decal.Adapter.Hosting
             ChatParserInterceptEventArgs args = new ChatParserInterceptEventArgs(text);
             Core.OnCommandLineText(args);
             return args.Eat;
+        }
+
+        /// <summary>
+        /// The host plugin this Decal runs inside - Decal Compat - so that a line a Decal plugin
+        /// hands on to the game is not offered back to it as a host plugin's command. Null when
+        /// there is none.
+        /// </summary>
+        public IPlugin Owner { get; set; }
+
+        /// <summary>
+        /// Offers a line to the plugins as Decal.dll's DispatchOnChatCommand did, remembering one
+        /// that none of them took, so that the InvokeChatParser a plugin follows it with does not
+        /// offer the plugins the same line twice.
+        /// </summary>
+        internal bool DispatchCommandLine(string text)
+        {
+            bool eaten = InvokeCommandLine(text);
+            _declinedLine = eaten ? null : text;
+            return eaten;
+        }
+
+        /// <summary>Whether this very line was just offered to the plugins and none took it; forgotten either way.</summary>
+        internal bool TakeDeclined(string text)
+        {
+            bool declined = _declinedLine != null && string.Equals(_declinedLine, text, StringComparison.Ordinal);
+            _declinedLine = null;
+            return declined;
+        }
+
+        /// <summary>
+        /// Runs a line no Decal plugin took as the game's chat box would have: the host's other
+        /// plugins' commands, the game client's own commands the server carries out, and plain
+        /// speech (<see cref="IHost.RunChatCommand"/>). What could not be sent is said once.
+        /// </summary>
+        internal void RunGameCommand(string text)
+        {
+            ChatCommandOutcome outcome = _host.RunChatCommand(text, Owner);
+            switch (outcome)
+            {
+                case ChatCommandOutcome.ClientOnly:
+                    NoteUnsupported("InvokeChatParser for the game client's own windows and settings", text);
+                    break;
+
+                case ChatCommandOutcome.NotSent:
+                    _host.Log.Info($"[Decal] {OwnerOfCaller()} ran \"{text}\", which was not sent: plugins may not act now, or it needs what is not known yet.");
+                    break;
+
+                case ChatCommandOutcome.Unknown:
+                    _host.Log.Info($"[Decal] {OwnerOfCaller()} ran \"{text}\", which names no command.");
+                    break;
+            }
         }
 
         /// <summary>
@@ -391,9 +524,11 @@ namespace Decal.Adapter.Hosting
             _host.ObjectMoved -= OnObjectMoved;
             _host.ObjectRemoved -= OnObjectRemoved;
             _host.ContainerViewed -= OnContainerViewed;
+            _host.ContainerClosed -= OnContainerClosed;
             _host.ChatReceived -= OnChatReceived;
             _host.PlayerIdentified -= OnPlayerIdentified;
             _host.LoggedOff -= OnLoggedOff;
+            _host.LoggingOff -= OnLoggingOff;
             _host.CharacterUpdated -= OnCharacterUpdated;
             _host.EnchantmentChanged -= OnEnchantmentChanged;
             _host.EnchantmentRemoved -= OnEnchantmentRemoved;
@@ -407,6 +542,8 @@ namespace Decal.Adapter.Hosting
                 view.IsOpen = false;
 
             _views.Clear();
+            Facing.Stop();
+            ClientWindow.Dispose();
             _disposed = true;
 
             if (ReferenceEquals(_current, this))
@@ -530,6 +667,16 @@ namespace Decal.Adapter.Hosting
                 _host.Log.Info($"[Decal] {OwnerOfCaller()} used {what}{(detail != null ? " (" + detail + ")" : string.Empty)}, which this host does not provide; it does nothing.");
         }
 
+        /// <summary>
+        /// Says something about what a plugin asked for once, by its kind, in the log: for what the
+        /// host does otherwise than Decal did rather than not at all. The plugin is named first.
+        /// </summary>
+        internal void SayOnce(string kind, string text)
+        {
+            if (_unsupportedNoted.Add("say:" + kind))
+                _host.Log.Info($"[Decal] {OwnerOfCaller()} {text}");
+        }
+
         internal FilterBase FindFilter(string name)
         {
             foreach (Extension extension in _extensions)
@@ -610,6 +757,13 @@ namespace Decal.Adapter.Hosting
         private void OnObjectCreated(object sender, HostObject obj)
         {
             Remember(obj);
+
+            // The character's own object, told of after the host named the character - a session
+            // carried on, say - may be what Login waits for. Raised before the world filter has it,
+            // as at a login, whose description came before the character's object.
+            if (obj.Id == _entering)
+                CheckLogin();
+
             Core.WorldFilter.OnCreateObject(obj);
         }
 
@@ -660,7 +814,27 @@ namespace Decal.Adapter.Hosting
         }
 
         private void OnContainerViewed(object sender, ContainerContents contents)
-            => Core.OnContainerOpened(new ContainerOpenedEventArgs(unchecked((int)contents.ContainerId)));
+        {
+            // A chest or a corpse; not one of the character's own packs, which the server lists too.
+            bool carried = _host.World.TryGet(contents.ContainerId, out HostObject container)
+                           && (container.ContainerId.HasValue || container.WielderId.HasValue || container.Id == _host.Character.Id);
+            if (!carried)
+                _openedContainer = contents.ContainerId;
+
+            Core.OnContainerOpened(new ContainerOpenedEventArgs(unchecked((int)contents.ContainerId)));
+        }
+
+        private void OnContainerClosed(object sender, uint id)
+        {
+            if (id == _openedContainer)
+                _openedContainer = 0;
+        }
+
+        /// <summary>
+        /// The container on the ground whose contents the server last listed - a corpse, a chest -
+        /// until it closes: Decal's Hooks.OpenedContainer, which Mag-Tools' "/mt loot" looks in.
+        /// </summary>
+        internal uint OpenedContainer => _openedContainer;
 
         private void OnChatReceived(object sender, ChatMessage message)
         {
@@ -671,7 +845,22 @@ namespace Decal.Adapter.Hosting
             Core.OnChatBoxMessage(new ChatTextInterceptEventArgs(text, ChatText.Color(message), 0));
         }
 
-        private void OnPlayerIdentified(object sender, uint id) => RaiseLogin(id);
+        /// <summary>
+        /// The host has named the character: a login has begun. Decal's Login waits for the
+        /// character's description, which is where Decal raised it (<see cref="CheckLogin"/>).
+        /// </summary>
+        private void OnPlayerIdentified(object sender, uint id)
+        {
+            if (id == 0 || id == _loggedInAs || id == _entering)
+                return;
+
+            _entering = id;
+            _loggedInAs = 0;
+            _clientEntered = false;
+            _loginCompleteRaised = false;
+            _countingChanges = false;
+            CheckLogin();
+        }
 
         /// <summary>
         /// The character left the world: Decal's Logoff, while the filters still describe it. The
@@ -680,15 +869,32 @@ namespace Decal.Adapter.Hosting
         /// </summary>
         private void OnLoggedOff(object sender, string reason)
         {
+            _entering = 0;
+            _clientEntered = false;
             if (_loggedInAs == 0)
                 return;
 
             _loggedInAs = 0;
             _loginCompleteRaised = false;
             _countingChanges = false;
+            _openedContainer = 0;
             Array.Clear(_lastVitals);
             _enchantments.Clear();
+            Facing.Stop();
             Core.CharacterFilter.OnLogoff(LogoffEventType.Authorized);
+        }
+
+        /// <summary>
+        /// The client asked to log the character off - the player's Log Out, or Hooks.Logout - and
+        /// the server has yet to agree: Decal's Logoff with Requested, before the Authorized that
+        /// <see cref="OnLoggedOff"/> raises once it has. Virindi Tank stopped its macro on this one.
+        /// </summary>
+        private void OnLoggingOff(object sender, EventArgs e)
+        {
+            if (_loggedInAs == 0)
+                return;
+
+            Core.CharacterFilter.OnLogoff(LogoffEventType.Requested);
         }
 
         private void OnCharacterUpdated(object sender, EventArgs e)
@@ -714,11 +920,20 @@ namespace Decal.Adapter.Hosting
             }
 
             CheckCharacterChanges();
+            CheckLogin();
             CheckLoginComplete();
         }
 
         private void OnPortalSpaceChanged(object sender, bool entering)
-            => Core.CharacterFilter.OnChangePortalMode(entering ? PortalEventType.EnterPortal : PortalEventType.ExitPortal);
+        {
+            if (entering)
+            {
+                _openedContainer = 0;
+                Facing.Stop();
+            }
+
+            Core.CharacterFilter.OnChangePortalMode(entering ? PortalEventType.EnterPortal : PortalEventType.ExitPortal);
+        }
 
         private void OnDied(object sender, string message) => Core.CharacterFilter.OnDeath(message);
 
@@ -801,9 +1016,27 @@ namespace Decal.Adapter.Hosting
         /// </summary>
         /// <remarks>
         /// Every message comes through here, so nothing is made unless someone listens, and
-        /// then one <see cref="Message"/> for all of them, read only when one asks.
+        /// then one <see cref="Message"/> for all of them, read only when one asks. The client's
+        /// word that it has finished entering the world is Decal's LoginComplete, raised once the
+        /// word itself has gone by.
         /// </remarks>
         private void OnMessageSeen(object sender, GameMessageEventArgs e)
+        {
+            Dispatch(e);
+
+            if (e.Direction == PacketDirection.Outbound
+                && MessageDecoder.TryReadActionType(e.Message, out uint action) && action == GameActions.LoginComplete)
+            {
+                OnClientEntered();
+            }
+
+            // The character the client's own character select chose, for a plugin that clicks the
+            // old client's Enter without choosing one: its CharacterEnterWorld names it first.
+            if (e.Direction == PacketDirection.Outbound && e.Message.Opcode == Opcodes.CharacterEnterWorld && e.Message.Payload.Length >= 4)
+                ClientWindow.NoteEntering(System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(e.Message.Payload.Span));
+        }
+
+        private void Dispatch(GameMessageEventArgs e)
         {
             MessageDirection direction = e.Direction == PacketDirection.Inbound ? MessageDirection.Inbound : MessageDirection.Outbound;
             bool processed = direction == MessageDirection.Inbound && Core.HasMessageProcessedListeners;
@@ -860,7 +1093,10 @@ namespace Decal.Adapter.Hosting
 
         private void OnTick(object sender, TimeSpan elapsed)
         {
+            CheckLogin();
             CheckLoginComplete();
+            ClientWindow.Tick();
+            Facing.Tick(elapsed);
             Core.OnRenderFrame();
             Site.RaiseRenderPreUI();
             Core.IDQueue.Pump(elapsed);
@@ -886,11 +1122,31 @@ namespace Decal.Adapter.Hosting
 
         // ------------------------------------------------------------------- helpers
 
-        private void RaiseLogin(uint id)
+        /// <summary>
+        /// Decal's Login, once the character's description has filled the character filter: its
+        /// attributes and its own object, which holds the rest - name, level, experience, burden.
+        /// </summary>
+        /// <remarks>
+        /// Decal's character filter (DecalFilters.dll's CharacterStats) raised Login as it finished
+        /// reading the character's description, game event 0x0013 - so a plugin's Login handler
+        /// found the filter filled - and before the plugins' own ServerDispatch and
+        /// MessageProcessed had the description. Here the description fills the host's world,
+        /// which says so before plugins have the message, so Login comes at the same point. ACE
+        /// names the character in that very message, so the host's word that it has named it
+        /// comes a moment earlier, with nothing filled yet. A session carried on names a character
+        /// already described and tells of its object straight after, so Login comes with that.
+        /// </remarks>
+        private void CheckLogin()
         {
-            if (id == 0 || id == _loggedInAs)
+            if (_entering == 0 || !Described || _host.Character.Object == null)
                 return;
 
+            RaiseLogin(_entering);
+        }
+
+        private void RaiseLogin(uint id)
+        {
+            _entering = 0;
             _loggedInAs = id;
             _loginCompleteRaised = false;
             _countingChanges = false;
@@ -899,12 +1155,37 @@ namespace Decal.Adapter.Hosting
         }
 
         /// <summary>
-        /// Decal's LoginComplete came when the character was fully in the world; the nearest
-        /// the host can say is once the character's own object has been described.
+        /// The client has said it has finished entering the world - its LoginComplete action,
+        /// 0x00A1, which it sends at every login and after every portal. A login whose
+        /// description never came has its Login now, so that no plugin hears LoginComplete
+        /// without it.
         /// </summary>
+        private void OnClientEntered()
+        {
+            if (_entering == 0 && _loggedInAs == 0)
+                return;
+
+            _clientEntered = true;
+            if (_entering != 0)
+                RaiseLogin(_entering);
+            else
+                CheckLoginComplete();
+        }
+
+        /// <summary>
+        /// Decal's LoginComplete: the first time the client says it has finished entering the
+        /// world after a login, once the character's own object is known.
+        /// </summary>
+        /// <remarks>
+        /// Decal's character filter raised it on the client's LoginComplete action and on nothing
+        /// else, once a login. By then the login's every message had been through every plugin -
+        /// the description first of all - so what a plugin kept of the character for itself from
+        /// MessageProcessed was there to count from: Virindi Reporter's luminance, taken at
+        /// LoginComplete as where this session's earnings start.
+        /// </remarks>
         private void CheckLoginComplete()
         {
-            if (_loggedInAs == 0 || _loginCompleteRaised || _host.Character.Object == null)
+            if (_loggedInAs == 0 || _loginCompleteRaised || !_clientEntered || _host.Character.Object == null)
                 return;
 
             // What the character has as it arrives is where Decal's change events count from - or,

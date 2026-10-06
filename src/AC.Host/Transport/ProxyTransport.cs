@@ -228,8 +228,13 @@ namespace AC.Host.Transport
 
                 MessageAssembler assembler = e.Direction == PacketDirection.Inbound ? _inbound : _outbound;
 
+                // What goes on is observed after the rewriter has put the host's own messages
+                // in, so each is told apart by the number it went under.
                 foreach (AcMessage message in assembler.Accept(e.Packet))
-                    MessageReceived?.Invoke(this, new GameMessageEventArgs(e.Direction, message));
+                {
+                    bool fromHost = e.Direction == PacketDirection.Outbound && _rewriter != null && _rewriter.IsOurs(message.FragmentSequence);
+                    MessageReceived?.Invoke(this, new GameMessageEventArgs(e.Direction, message, fromHost));
+                }
 
                 if (SessionBoundary.TryRead(e.Packet, e.Direction, out SessionEnd end))
                     SessionEnded?.Invoke(this, end);

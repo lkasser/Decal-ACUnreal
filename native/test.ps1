@@ -13,15 +13,22 @@
 
 .EXAMPLE
     native\test.ps1
+
+.EXAMPLE
+    native\test.ps1 -OutputDirectory $env:TEMP\overlay-selftest
+    Builds it somewhere other than native\build\tests, as build.ps1 can.
 #>
 [CmdletBinding()]
-param()
+param(
+    # Somewhere other than native\build\tests, to keep out of a folder the game may hold.
+    [string] $OutputDirectory
+)
 
 $ErrorActionPreference = "Stop"
 
 $native = $PSScriptRoot
 $third = Join-Path $native "third_party"
-$out = Join-Path $native "build\tests"
+$out = if ($OutputDirectory) { $OutputDirectory } else { Join-Path $native "build\tests" }
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) {
@@ -45,6 +52,7 @@ $sources = @(
     "ACUnrealOverlay\gdi_font.cpp",
     "ACUnrealOverlay\textures.cpp",
     "ACUnrealOverlay\input.cpp",
+    "ACUnrealOverlay\log.cpp",
     "third_party\imgui\imgui.cpp",
     "third_party\imgui\imgui_draw.cpp",
     "third_party\imgui\imgui_tables.cpp",

@@ -535,6 +535,7 @@ void ParseStateDocument(const json& document, State& into) {
     into.published_ms = ReadInt64(document, "published_ms");
     into.default_theme = ReadString(document, "default_theme");
     into.key_capture = ReadString(document, "key_capture");
+    into.keep_playing_minimized = ReadBool(document, "keep_playing_minimized");
     if (const json* bar = Field(document, "decal_bar"); bar != nullptr && bar->is_object()) {
         into.decal_bar.known = true;
         into.decal_bar.state = ReadCoordinate(*bar, "state");
@@ -559,13 +560,60 @@ void ParseStateDocument(const json& document, State& into) {
             into.vvs_bar.horizontal = ReadBool(*bar, "horizontal");
         }
     }
+    // {"ui_scale":1.5,"plugin_bar":[8,80,62,214]}: the client's own plugin bar, in its interface
+    // units, and the UI scale the player chose. A bar of any other shape is the client's default.
+    if (const json* client = Field(document, "client_ui"); client != nullptr && client->is_object()) {
+        into.client_ui.known = true;
+        const double scale = ReadDouble(*client, "ui_scale", 1.0);
+        into.client_ui.ui_scale = std::isfinite(scale) ? std::clamp(scale, 1.0, 3.0) : 1.0;
+        const json* bar = Field(*client, "plugin_bar");
+        if (bar != nullptr && bar->is_array() && bar->size() == 4 &&
+            std::all_of(bar->begin(), bar->end(), [](const json& v) { return v.is_number() && std::isfinite(v.get<double>()); })) {
+            for (size_t i = 0; i < 4; ++i)
+                into.client_ui.plugin_bar[i] = static_cast<float>(std::clamp((*bar)[i].get<double>(), -100000.0, 100000.0));
+        }
+    }
 }
 
 // What one message from the host turned out to be.
 enum class FrameKind { Rubbish, State, Image, Input };
 
-// The keys an input frame asks to have held: {"input":{"held":[87,65],"sequence":3}}.
-bool ReadInput(const json& source, std::vector<uint16_t>& keys) {
+// A click an input frame carries, if it carries a sound one: a positive id, a layout of a
+// sensible size, and up to eight points inside it. Anything else is no click at all - a
+// click in the wrong place is worse than none.
+void ReadClick(const json& source, Click& click) {
+    click = Click{};
+    const json* found = Field(source, "click");
+    if (found == nullptr || !found->is_object()) return;
+
+    Click read;
+    read.id = ReadInt64(*found, "id", 0);
+    const int64_t width = ReadInt64(*found, "layout_width", 0);
+    const int64_t height = ReadInt64(*found, "layout_height", 0);
+    if (read.id <= 0 || width < 1 || width > 10000 || height < 1 || height > 10000) return;
+    read.layout_width = static_cast<int>(width);
+    read.layout_height = static_cast<int>(height);
+
+    // The client's Desktop UI Scale, which an older host does not send: its own size then.
+    const double scale = ReadDouble(*found, "ui_scale", 1.0);
+    read.ui_scale = std::isfinite(scale) ? std::clamp(scale, 1.0, 3.0) : 1.0;
+
+    const json* points = Field(*found, "points");
+    if (points == nullptr || !points->is_array()) return;
+    for (const json& point : *points) {
+        if (!point.is_array() || point.size() != 2 || !point[0].is_number_integer() || !point[1].is_number_integer()) return;
+        const int64_t x = point[0].get<int64_t>();
+        const int64_t y = point[1].get<int64_t>();
+        if (x < 0 || y < 0 || x >= read.layout_width || y >= read.layout_height || read.points.size() >= 8) return;
+        read.points.push_back({static_cast<int>(x), static_cast<int>(y)});
+    }
+
+    if (!read.points.empty()) click = std::move(read);
+}
+
+// The keys an input frame asks to have held: {"input":{"held":[87,65],"sequence":3}}, and the
+// click it may carry beside them.
+bool ReadInput(const json& source, std::vector<uint16_t>& keys, Click& click) {
     const json* held = Field(source, "held");
     if (held == nullptr || !held->is_array()) return false;
 
@@ -576,13 +624,14 @@ bool ReadInput(const json& source, std::vector<uint16_t>& keys) {
         if (code >= 1 && code <= 254 && keys.size() < 16) keys.push_back(static_cast<uint16_t>(code));
     }
 
+    ReadClick(source, click);
     return true;
 }
 
 // Rubbish is one lost message, never a reason to drop the host. An image frame is an
 // object whose only member is "image"; anything else is taken as a snapshot, which is
 // what every message was before images existed.
-FrameKind ParseFrame(const std::vector<char>& utf8, State& state, ImagePixels& image, std::vector<uint16_t>& keys) {
+FrameKind ParseFrame(const std::vector<char>& utf8, State& state, ImagePixels& image, std::vector<uint16_t>& keys, Click& click) {
     const json document = json::parse(utf8.begin(), utf8.end(), nullptr, /*allow_exceptions=*/false);
     if (document.is_discarded() || !document.is_object()) return FrameKind::Rubbish;
 
@@ -590,7 +639,7 @@ FrameKind ParseFrame(const std::vector<char>& utf8, State& state, ImagePixels& i
         return frame->is_object() && ReadImage(*frame, image) ? FrameKind::Image : FrameKind::Rubbish;
 
     if (const json* frame = Field(document, "input"); frame != nullptr)
-        return frame->is_object() && ReadInput(*frame, keys) ? FrameKind::Input : FrameKind::Rubbish;
+        return frame->is_object() && ReadInput(*frame, keys, click) ? FrameKind::Input : FrameKind::Rubbish;
 
     ParseStateDocument(document, state);
     return FrameKind::State;
@@ -657,6 +706,22 @@ struct Ipc::Impl {
     std::vector<uint16_t> wanted_keys;
     ULONGLONG wanted_at = 0;
 
+    // The last click the host asked for, and the id of the last one taken to be made.
+    Click wanted_click;
+    int64_t taken_click = 0;
+
+    // Set before the worker starts and only read by it afterwards, so it needs no lock.
+    std::function<void()> keys_listener;
+
+    void KeysChanged() noexcept {
+        if (!keys_listener) return;
+        try {
+            keys_listener();
+        } catch (...) {
+            // A listener that throws costs a key press its promptness, not the connection.
+        }
+    }
+
     std::mutex life_gate;
     std::thread worker;
     std::atomic<bool> stopping{false};
@@ -704,11 +769,13 @@ struct Ipc::Impl {
             connected.store(false, std::memory_order_relaxed);
             pipe.Close();
 
-            // A host that has gone holds no keys.
+            // A host that has gone holds no keys, and wants no click it has not had made.
             {
                 std::lock_guard<std::mutex> hold(input_gate);
                 wanted_keys.clear();
+                wanted_click = Click{};
             }
+            KeysChanged();
 
             // Commands queued for a host that has gone describe a panel the next host has
             // not drawn yet, and sending them at it would act on a stale click.
@@ -758,7 +825,8 @@ struct Ipc::Impl {
             State next;
             ImagePixels image;
             std::vector<uint16_t> keys;
-            switch (ParseFrame(buffer, next, image, keys)) {
+            Click click;
+            switch (ParseFrame(buffer, next, image, keys, click)) {
                 case FrameKind::State:
                     Publish(std::move(next));
                     break;
@@ -766,9 +834,13 @@ struct Ipc::Impl {
                     Receive(std::move(image));
                     break;
                 case FrameKind::Input: {
-                    std::lock_guard<std::mutex> hold(input_gate);
-                    wanted_keys = std::move(keys);
-                    wanted_at = GetTickCount64();
+                    {
+                        std::lock_guard<std::mutex> hold(input_gate);
+                        wanted_keys = std::move(keys);
+                        wanted_at = GetTickCount64();
+                        if (click.id != 0) wanted_click = std::move(click);
+                    }
+                    KeysChanged();
                     break;
                 }
                 case FrameKind::Rubbish:
@@ -1022,6 +1094,32 @@ void Ipc::WantedKeys(std::vector<uint16_t>& keys, uint64_t& age_ms) const noexce
         if (impl_->wanted_at != 0) age_ms = GetTickCount64() - impl_->wanted_at;
     } catch (...) {
         keys.clear();
+    }
+}
+
+bool Ipc::TakeClick(Click& click) noexcept {
+    if (impl_ == nullptr) return false;
+
+    try {
+        std::lock_guard<std::mutex> hold(impl_->input_gate);
+        if (impl_->wanted_click.id == 0 || impl_->wanted_click.id == impl_->taken_click) return false;
+        impl_->taken_click = impl_->wanted_click.id;
+        click = impl_->wanted_click;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void Ipc::SetKeysListener(std::function<void()> listener) noexcept {
+    if (impl_ == nullptr) return;
+
+    try {
+        std::lock_guard<std::mutex> hold(impl_->life_gate);
+        if (impl_->worker.joinable()) return;  // too late: the worker is already reading it
+        impl_->keys_listener = std::move(listener);
+    } catch (...) {
+        // Without it the keys are still pressed, a pass of the pump later.
     }
 }
 

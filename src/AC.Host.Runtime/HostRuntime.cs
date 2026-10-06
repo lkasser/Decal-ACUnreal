@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AC.Dat;
@@ -86,6 +88,8 @@ namespace AC.Host.Runtime
                 // relays anything, and the host the world, if the session turns out to go on.
                 if (HandsOver)
                     TakeHandover();
+                else if (IsLive)
+                    log.Info("This host was told not to hand sessions over: it neither looks for one the host before it left nor leaves one for the next.");
 
                 if (!options.NoPlugins)
                 {
@@ -110,6 +114,29 @@ namespace AC.Host.Runtime
 
                 if (options.Overlay)
                     SetUpOverlay();
+
+                // The client's own word on which screen it shows, which no message carries: what a
+                // logout or a login checks it ended where it should.
+                string clientLog = options.ClientLogPath ?? (Transport is ProxyTransport ? null : string.Empty);
+                if (clientLog != string.Empty && Host.Session != null)
+                {
+                    Func<string> find = clientLog == null ? ClientLog.FindPath : () => System.IO.File.Exists(clientLog) ? clientLog : null;
+                    AC.Host.Actions.SessionControl session = Host.Session;
+                    ClientLog = new ClientLog(find, line => Host.RunOnGameThread(() => session.NoteClientLog(line)));
+                }
+
+                // The client's own settings, read only: whether its Unattended Combat Manager - or
+                // another of its plugins that can play the character - is switched on, and the
+                // Desktop UI Scale its character select is drawn at.
+                string clientSettings = options.ClientSettingsFolder ?? (Transport is ProxyTransport ? null : string.Empty);
+                if (clientSettings != string.Empty)
+                {
+                    Func<string> findSaved = clientSettings == null
+                        ? () => ClientSettingsWatcher.FindSavedFolder(ClientLog?.Path)
+                        : () => System.IO.Directory.Exists(clientSettings) ? clientSettings : null;
+                    ClientSettings = new ClientSettingsWatcher(findSaved,
+                        (plugins, scale, bar) => Host.RunOnGameThread(() => Host.NoteClientSettings(plugins, scale, bar)));
+                }
 
                 Host.ServerConnected += (_, name) => log.Info($"Connected to server \"{name}\".");
                 Host.PlayerIdentified += (_, id) => log.Info($"Player object is 0x{id:X8}.");
@@ -159,6 +186,61 @@ namespace AC.Host.Runtime
         /// <summary>The pipe <c>achost ctl</c> talks to, or null when none is served.</summary>
         public ControlPipe Control { get; }
 
+        /// <summary>The game client's own log, read for which screen it shows; null when it is not read.</summary>
+        public ClientLog ClientLog { get; }
+
+        /// <summary>How often the client's log is read for what it has written since.</summary>
+        private static readonly TimeSpan ReadClientLogEvery = TimeSpan.FromMilliseconds(250);
+
+        private System.Threading.Timer _clientLogTimer;
+        private int _readingClientLog;
+
+        /// <summary>Reads the client's log off the game thread; one read at a time.</summary>
+        private void ReadClientLog()
+        {
+            if (Interlocked.Exchange(ref _readingClientLog, 1) == 1)
+                return;
+
+            try
+            {
+                ClientLog?.Poll();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn("Could not read the game client's log: " + ex.Message);
+            }
+            finally
+            {
+                Volatile.Write(ref _readingClientLog, 0);
+            }
+        }
+
+        /// <summary>The game client's own settings, watched for its plugins and its UI scale; null when they are not read.</summary>
+        public ClientSettingsWatcher ClientSettings { get; }
+
+        private System.Threading.Timer _clientSettingsTimer;
+        private int _readingClientSettings;
+
+        /// <summary>Looks at the client's settings off the game thread; one look at a time.</summary>
+        private void ReadClientSettings()
+        {
+            if (Interlocked.Exchange(ref _readingClientSettings, 1) == 1)
+                return;
+
+            try
+            {
+                ClientSettings?.Poll();
+            }
+            catch (Exception ex)
+            {
+                _log.Warn("Could not read the game client's settings: " + ex.Message);
+            }
+            finally
+            {
+                Volatile.Write(ref _readingClientSettings, 0);
+            }
+        }
+
         /// <summary>Whether the injected overlay is attached right now.</summary>
         public bool OverlayAttached => Overlay?.IsConnected == true;
 
@@ -175,6 +257,9 @@ namespace AC.Host.Runtime
         public string HandoverPath => _handoverPath;
 
         private string _handoverPath;
+
+        /// <summary>What the host before this one handed over and this one took, or null.</summary>
+        private HandoverSnapshot _taken;
 
         /// <summary>
         /// Starts the plugins and the relay, and then the pipes. Returns once everything is up;
@@ -204,6 +289,12 @@ namespace AC.Host.Runtime
 
             Control?.Start();
             Overlay?.Start();
+
+            if (ClientLog != null)
+                _clientLogTimer = new System.Threading.Timer(_ => ReadClientLog(), null, ReadClientLogEvery, ReadClientLogEvery);
+
+            if (ClientSettings != null)
+                _clientSettingsTimer = new System.Threading.Timer(_ => ReadClientSettings(), null, TimeSpan.Zero, ClientSettingsWatcher.LookEvery);
         }
 
         private static IGameTransport CreateTransport(HostRuntimeOptions options)
@@ -253,11 +344,30 @@ namespace AC.Host.Runtime
                     return;
                 }
 
+                // What the game's window is doing - minimized, drawing, parked - said when it
+                // changes and to each host that connects.
+                if (command.Owner.Length == 0 && command.Name == "game-window")
+                {
+                    if (GameWindowState.TryParse(command.Value, out GameWindowState window))
+                        Host.RunOnGameThread(() => Host.NoteGameWindow(window));
+                    else
+                        _log.Warn($"[overlay] The overlay said the game window is \"{command.Value}\", which is not a state.");
+                    return;
+                }
+
                 Host.DispatchCommand(command.Owner, new OverlayCommand(command.Name, command.Value, command.RowId, command.ControlId));
             };
 
-            // Walking is done with the game's own keys, which the overlay presses.
+            // Walking is done with the game's own keys, which the overlay presses; entering the
+            // world, with a click on the character select, which it makes.
             Host.InputKeys.Publish = held => server.PublishInput(held);
+            Host.InputKeys.PublishClick = click => server.PublishClick(new AC.Host.Overlay.OverlayClick
+            {
+                LayoutWidth = click.LayoutWidth,
+                LayoutHeight = click.LayoutHeight,
+                Points = click.Points.Select(p => new[] { p.X, p.Y }).ToList(),
+                UiScale = click.UiScale == 1.0 ? null : click.UiScale,
+            });
             Host.InputKeys.Attached = () => server.IsConnected;
 
             _log.Info($"Overlay: publishing on the named pipe {server.PipeName}.");
@@ -310,6 +420,10 @@ namespace AC.Host.Runtime
                 _log.Info(_overlayAttached
                     ? "Overlay attached."
                     : "Overlay detached.");
+
+                // An overlay that has gone says nothing more about the window.
+                if (!_overlayAttached)
+                    Host.NoteGameWindow(GameWindowState.Unknown);
             }
         }
 
@@ -389,27 +503,93 @@ namespace AC.Host.Runtime
         /// Reads what the host before this one on the same ports left, and deletes it: the relay
         /// resumes its numbering now, before relaying anything, and the host is offered the world.
         /// </summary>
+        /// <remarks>
+        /// Always says, in the log and to <c>ctl status</c>, the whole path it looked at and what it
+        /// found there: nothing, the session taken, or why what was there was not. A handover that
+        /// went missing between two hosts is otherwise invisible - the next host simply says it
+        /// joined a session it knows nothing of - and the two paths side by side in the log are what
+        /// tell a file written somewhere else from a file never written. Nothing found here is ever a
+        /// reason for the host not to start.
+        /// </remarks>
         private void TakeHandover()
         {
-            _handoverPath = HandoverSnapshot.PathIn(Host.DataDirectory, Options.Proxy.ListenPort);
-            HandoverSnapshot found = HandoverSnapshot.Take(_handoverPath, Options.Proxy, DateTimeOffset.UtcNow, out string refusal);
-            if (refusal != null)
-                _log.Info(refusal);
-            if (found == null)
-                return;
+            _handoverPath = System.IO.Path.GetFullPath(HandoverSnapshot.PathIn(Host.DataDirectory, Options.Proxy.ListenPort));
 
-            // Harmless if the session turns out to be a new one: a login starts the numbering over.
-            if (found.Relay != null && Transport is ProxyTransport relay)
-                relay.Resume(found.Relay);
+            try
+            {
+                HandoverSnapshot found = HandoverSnapshot.Take(_handoverPath, Options.Proxy, DateTimeOffset.UtcNow, out string refusal);
 
-            Host.OfferHandover(found);
-            _log.Info($"The host before this one handed over the session it was relaying at {found.WrittenAt.ToLocalTime():HH:mm:ss}; "
-                + "it is carried on if the game is still connected.");
+                // Read, and meant to be gone: one left behind would be taken again by a host started next.
+                string leftBehind = (found != null || refusal != null) && System.IO.File.Exists(_handoverPath)
+                    ? $" It could not be deleted, so a host started within {HandoverSnapshot.MaxAge.TotalMinutes:0} minutes would take it again."
+                    : string.Empty;
+
+                if (refusal != null)
+                {
+                    _log.Info(refusal + leftBehind);
+                    Host.HandoverLookup = "not taken: " + refusal;
+                    return;
+                }
+
+                if (found == null)
+                {
+                    _log.Info($"No session was handed over: there is nothing at {_handoverPath}. {WhatIsBeside(_handoverPath)}");
+                    Host.HandoverLookup = "none at " + _handoverPath;
+                    return;
+                }
+
+                // Harmless if the session turns out to be a new one: a login starts the numbering over.
+                if (found.Relay != null && Transport is ProxyTransport relay)
+                    relay.Resume(found.Relay);
+
+                Host.OfferHandover(found);
+                _taken = found;
+                Host.HandoverLookup = $"taken from {_handoverPath}, written at {found.WrittenAt.ToLocalTime():HH:mm:ss} ({found.Journal.Count} message(s))";
+                _log.Info($"The host before this one handed over the session it was relaying at {found.WrittenAt.ToLocalTime():HH:mm:ss}, in {_handoverPath} "
+                    + $"({found.Journal.Count} message(s)); it is carried on if the game is still connected.{leftBehind}");
+            }
+            catch (Exception ex)
+            {
+                // Whatever went wrong, the player is better served by a host that starts knowing
+                // nothing - and asks for a login - than by one that does not start at all.
+                _log.Warn($"The session handed over in {_handoverPath} could not be taken up ({ex.Message}); the host starts without it.");
+                Host.HandoverLookup = $"not taken from {_handoverPath}: {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// What the folder a handover was looked for in holds, in a sentence: so that a host told
+        /// there is nothing there can be seen to be looking at the folder the host before it wrote
+        /// to, or at one where that host's files are not.
+        /// </summary>
+        private static string WhatIsBeside(string path)
+        {
+            string folder = System.IO.Path.GetDirectoryName(path);
+            try
+            {
+                if (!System.IO.Directory.Exists(folder))
+                    return $"There is no {folder}.";
+
+                List<string> names = System.IO.Directory.EnumerateFileSystemEntries(folder)
+                    .Select(System.IO.Path.GetFileName)
+                    .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                const int Listed = 12;
+                return names.Count == 0
+                    ? $"{folder} is empty."
+                    : $"{folder} holds {string.Join(", ", names.Take(Listed))}{(names.Count > Listed ? $" and {names.Count - Listed} more" : string.Empty)}.";
+            }
+            catch (Exception ex) when (ex is System.IO.IOException || ex is UnauthorizedAccessException)
+            {
+                return $"{folder} could not be listed ({ex.Message}).";
+            }
         }
 
         /// <summary>
         /// Leaves the session for the next host on these ports: once the host has stopped, so the
-        /// world and the relay are as they will stay. Nothing is written when there was no session.
+        /// world and the relay are as they will stay. Nothing is written when there was no session,
+        /// and the log says so, with the path the next host will look at.
         /// </summary>
         private void HandOver()
         {
@@ -420,19 +600,29 @@ namespace AC.Host.Runtime
             {
                 HandoverSnapshot snapshot = Host.CreateHandover(DateTimeOffset.UtcNow);
                 if (snapshot == null)
+                {
+                    _log.Info($"Nothing was handed over in {_handoverPath}: "
+                        + (Host.SessionJournal.Overflowed
+                            ? "the session had outgrown what can be handed over, so the next host starts as if the game had just connected."
+                            : "no session was going on."));
                     return;
+                }
 
                 snapshot.SetEndpoints(Options.Proxy);
                 if (Transport is ProxyTransport relay)
                     snapshot.Relay = relay.SaveState();
 
                 snapshot.Save(_handoverPath);
-                _log.Info($"Handed the session over in {_handoverPath} ({snapshot.Journal.Count} message(s)): "
-                    + $"a host started on the same ports within {HandoverSnapshot.MaxAge.TotalMinutes:0} minutes carries it on.");
+                _log.Info(ReferenceEquals(snapshot, _taken)
+                    ? $"Handed on the session the host before this one handed over at {snapshot.WrittenAt.ToLocalTime():HH:mm:ss}, never taken up because the game was "
+                        + $"not heard from, in {_handoverPath} ({snapshot.Journal.Count} message(s)): a host started on the same ports within "
+                        + $"{HandoverSnapshot.MaxAge.TotalMinutes:0} minutes of that time carries it on."
+                    : $"Handed the session over in {_handoverPath} ({snapshot.Journal.Count} message(s), written at {snapshot.WrittenAt.ToLocalTime():HH:mm:ss}): "
+                        + $"a host started on the same ports within {HandoverSnapshot.MaxAge.TotalMinutes:0} minutes carries it on.");
             }
             catch (Exception ex) when (ex is System.IO.IOException || ex is UnauthorizedAccessException)
             {
-                _log.Error("The session could not be handed over; a host started next will not know the character.", ex);
+                _log.Error($"The session could not be handed over in {_handoverPath}; a host started next will not know the character.", ex);
             }
         }
 
@@ -450,6 +640,12 @@ namespace AC.Host.Runtime
             if (_disposed)
                 return;
             _disposed = true;
+
+            if (_clientLogTimer != null)
+                await _clientLogTimer.DisposeAsync().ConfigureAwait(false);
+
+            if (_clientSettingsTimer != null)
+                await _clientSettingsTimer.DisposeAsync().ConfigureAwait(false);
 
             if (Control != null)
                 await Control.DisposeAsync().ConfigureAwait(false);

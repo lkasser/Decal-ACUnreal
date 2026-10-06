@@ -36,6 +36,20 @@ namespace AC.Host.World
         IReadOnlyList<AccountCharacter> AccountCharacters { get; }
 
         /// <summary>
+        /// How many characters the account may have, as the server's character list says - the
+        /// rows of the character select. 0 before the list has come, and from a world that does
+        /// not keep it.
+        /// </summary>
+        int CharacterSlots => 0;
+
+        /// <summary>
+        /// Where the session stands - at the character list, entering the world, in it, logging
+        /// off - as the messages either way say it. What <see cref="AC.Host.Plugins.IGameActions.LogOutAsync"/>
+        /// and <see cref="AC.Host.Plugins.IGameActions.EnterWorldAsync"/> are allowed from.
+        /// </summary>
+        SessionPhase Phase => SessionPhase.None;
+
+        /// <summary>
         /// The world's solid geometry - ground, walls, buildings, the client's own objects - for
         /// telling whether a projectile would reach its target; null when the host has no client
         /// archives to read it from.
@@ -59,6 +73,67 @@ namespace AC.Host.World
 
         /// <summary>Seconds until a character being deleted is gone; 0 for one that is not being deleted.</summary>
         public uint DeleteTimeout { get; }
+
+        /// <summary>
+        /// The character a player means by <paramref name="text"/>: its name, whole and in any case;
+        /// its id, as "0x50000006" or the decimal number; or its place in the list, from 1. Null when
+        /// none is meant, or the text could mean two.
+        /// </summary>
+        public static AccountCharacter Find(IReadOnlyList<AccountCharacter> characters, string text)
+        {
+            if (characters == null || string.IsNullOrWhiteSpace(text))
+                return null;
+
+            text = text.Trim();
+            AccountCharacter named = null;
+            foreach (AccountCharacter character in characters)
+            {
+                if (string.Equals(character.Name, text, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (named != null)
+                        return null;
+                    named = character;
+                }
+            }
+
+            if (named != null)
+                return named;
+
+            bool hex = text.StartsWith("0x", StringComparison.OrdinalIgnoreCase);
+            if (!uint.TryParse(hex ? text.Substring(2) : text, hex ? System.Globalization.NumberStyles.HexNumber : System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out uint number))
+                return null;
+
+            foreach (AccountCharacter character in characters)
+            {
+                if (character.Id == number)
+                    return character;
+            }
+
+            // A small number is a place in the list; an id is never that small.
+            return !hex && number >= 1 && number <= characters.Count ? characters[(int)number - 1] : null;
+        }
+
+        public override string ToString() => $"{Name} (0x{Id:X8})";
+    }
+
+    /// <summary>Where the session stands, as the messages either way say it.</summary>
+    public enum SessionPhase
+    {
+        /// <summary>No session, or one the host has not yet seen enough of to say.</summary>
+        None,
+
+        /// <summary>At the character list: the server has listed the account's characters, and none is in the world.</summary>
+        CharacterList,
+
+        /// <summary>The client has asked to enter the world, and its character is not in it yet.</summary>
+        EnteringWorld,
+
+        /// <summary>A character is in the world.</summary>
+        InWorld,
+
+        /// <summary>The client has asked to log off, and the server has not yet said it has.</summary>
+        LoggingOff,
     }
 
     /// <summary>
@@ -105,6 +180,8 @@ namespace AC.Host.World
         public string AccountName { get; private set; } = string.Empty;
 
         public IReadOnlyList<AccountCharacter> AccountCharacters { get; private set; } = Array.Empty<AccountCharacter>();
+
+        public int CharacterSlots { get; private set; }
 
         public int ObjectCount => _objects.Count;
 
@@ -207,15 +284,18 @@ namespace AC.Host.World
             ServerConnected?.Invoke(this, name);
         }
 
-        /// <summary>The account and its characters, from the server's character list.</summary>
-        internal void SetAccount(string name, IReadOnlyList<AccountCharacter> characters)
+        /// <summary>The account, its characters and its slots, from the server's character list.</summary>
+        internal void SetAccount(string name, IReadOnlyList<AccountCharacter> characters, int slots = 0)
         {
             AccountName = name ?? string.Empty;
             AccountCharacters = characters ?? Array.Empty<AccountCharacter>();
+            CharacterSlots = Math.Max(0, slots);
         }
 
         internal void SetPlayerId(uint id)
         {
+            Phase = SessionPhase.InWorld;
+            EnteringCharacterId = 0;
             Character.Id = id;
             Character.Object = Get(id);
             if (Character.Object?.Location is Location where)
@@ -244,6 +324,7 @@ namespace AC.Host.World
         {
             Character.Location = location;
             Character.Sequences = sequences;
+            Character.ClientReports++;
             ViewFrom(location.LandblockCell);
             CheckVendorReach();
             NotifyCharacterUpdated();
@@ -263,6 +344,7 @@ namespace AC.Host.World
             Character.Motion = motion;
             Character.Location = location;
             Character.Sequences = sequences;
+            Character.ClientReports++;
             ViewFrom(location.LandblockCell);
             CheckVendorReach();
             NotifyCharacterUpdated();

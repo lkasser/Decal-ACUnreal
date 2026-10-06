@@ -16,9 +16,10 @@ namespace Decal.Adapter.Wrappers
     /// Actions go to the host's <see cref="IGameActions"/>, which sends them only while the
     /// player lets plugins act, and reports - never throws - when it will not. Decal's hooks
     /// returned nothing, so neither do these: what an action did shows up later as world
-    /// changes, as it always did. Hooks with no counterpart in the protocol - the client's own
-    /// selection, its window layout, its trade and vendor panels - do nothing, and say so once
-    /// in the log.
+    /// changes, as it always did. A turn to a heading is the game's own turn keys, held through
+    /// the overlay (<see cref="Facing"/>). Hooks with no counterpart in the protocol - the
+    /// client's own selection, its window layout, its trade and vendor panels - do nothing, and
+    /// say so once in the log; a plugin's own selection still stands for what it then uses on it.
     /// </remarks>
     public sealed class HooksWrapper : MarshalByRefObject, IDisposable
     {
@@ -56,25 +57,40 @@ namespace Decal.Adapter.Wrappers
 
         public double LocationZ => Character.Location?.Z ?? 0;
 
-        /// <summary>Degrees clockwise from north. Setting it would turn the character; the host cannot, so it does nothing.</summary>
+        /// <summary>Degrees clockwise from north. Setting it turns the character, as <see cref="FaceHeading"/> does.</summary>
         public double Heading
         {
             get => Character.Location is Location l ? WorldObject.HeadingOf(l) : 0;
-            set => _runtime.NoteUnsupported("Actions.Heading");
+            set => FaceHeading(value, true);
         }
 
         public double HeadingRadians
         {
             get => Heading * Math.PI / 180.0;
-            set => _runtime.NoteUnsupported("Actions.HeadingRadians");
+            set => FaceHeading(value * 180.0 / Math.PI, true);
         }
 
-        /// <summary>The object the player has selected in the client.</summary>
+        /// <summary>
+        /// The object selected: the one a plugin last chose (<see cref="SelectItem"/>) until the
+        /// player selects something in the client, and the client's own after that.
+        /// </summary>
         public int CurrentSelection
         {
-            get => unchecked((int)Character.SelectedId);
+            get => unchecked((int)Selected);
             set => SelectItem(value);
         }
+
+        /// <summary>
+        /// The plugin's choice while it stands - the client's selection has not moved since, and
+        /// the object is still in the world - else the client's own.
+        /// </summary>
+        private uint Selected
+            => _chosen != 0 && Character.SelectedId == _clientWhenChosen && _runtime.Host.World.TryGet(_chosen, out _)
+                ? _chosen
+                : Character.SelectedId;
+
+        private uint _chosen;
+        private uint _clientWhenChosen;
 
         public int PreviousSelection { get; set; }
 
@@ -96,7 +112,8 @@ namespace Decal.Adapter.Wrappers
 
         public int CommandInterpreter => 0;
 
-        public int OpenedContainer => 0;
+        /// <summary>The container on the ground whose contents the server last listed, until it closes; 0 for none.</summary>
+        public int OpenedContainer => unchecked((int)_runtime.OpenedContainer);
 
         public int VendorId => 0;
 
@@ -163,21 +180,23 @@ namespace Decal.Adapter.Wrappers
 
         /// <summary>
         /// Treats text as though the player had typed it: offered to plugins as a command
-        /// first, and said aloud if none of them claims it and it is not a slash command -
-        /// the client's own commands are the client's, and the host cannot type them.
+        /// first, then run as the game's chat box would - the host's other plugins' commands,
+        /// the game client's own commands the server carries out ("/f", "/t", an "@" command),
+        /// and plain speech (<see cref="IHost.RunChatCommand"/>). A command that changes only the
+        /// client's own windows cannot be done from outside it, and says so once.
         /// </summary>
+        /// <remarks>
+        /// A plugin that has just offered the line to the plugins itself, through Decal.dll's
+        /// DispatchOnChatCommand (<see cref="DecalNative"/>), and had it declined, is not made to
+        /// offer it again: Mag-Tools and Virindi HUDs' chat window did that, then this.
+        /// </remarks>
         public void InvokeChatParser(string text)
         {
-            if (_runtime.InvokeCommandLine(text) || string.IsNullOrWhiteSpace(text))
+            bool declined = _runtime.TakeDeclined(text);
+            if (string.IsNullOrWhiteSpace(text) || (!declined && _runtime.InvokeCommandLine(text)))
                 return;
 
-            if (text.StartsWith("/", StringComparison.Ordinal) || text.StartsWith("@", StringComparison.Ordinal))
-            {
-                _runtime.NoteUnsupported("InvokeChatParser for the client's own commands", text);
-                return;
-            }
-
-            Send(Game.SayAsync(text));
+            _runtime.RunGameCommand(text);
         }
 
         // ------------------------------------------------------------------- actions
@@ -186,19 +205,41 @@ namespace Decal.Adapter.Wrappers
 
         /// <summary>
         /// Uses an item. A use state of 1 means "on the current selection", which is how Decal
-        /// applied a kit or key to whatever the player had picked.
+        /// applied a kit or key to whatever was selected - the plugin's own choice, when it has
+        /// just made one (<see cref="SelectItem"/>): Mag-Tools' "/mt use key on chest" selects the
+        /// chest, then uses the key so.
         /// </summary>
         public void UseItem(int objectId, int useState, int useMethod)
         {
-            if (useState == 1 && Character.SelectedId != 0)
-                Send(Game.UseOnAsync(unchecked((uint)objectId), Character.SelectedId));
+            uint target = Selected;
+            if (useState == 1 && target != 0)
+                Send(Game.UseOnAsync(unchecked((uint)objectId), target));
             else
                 Send(Game.UseAsync(unchecked((uint)objectId)));
         }
 
         public void ApplyItem(int useThis, int onThis) => Send(Game.UseOnAsync(unchecked((uint)useThis), unchecked((uint)onThis)));
 
-        public void CastSpell(int spellId, int objectId) => Send(Game.CastAsync(unchecked((uint)objectId), unchecked((uint)spellId)));
+        /// <summary>
+        /// Casts a spell at an object, or - with no object - as the client cast one with nothing
+        /// named: a spell that takes no target (a ring, a summoned portal) at nothing, any other at
+        /// the character itself.
+        /// </summary>
+        public void CastSpell(int spellId, int objectId)
+        {
+            uint spell = unchecked((uint)spellId);
+            if (objectId != 0)
+            {
+                Send(Game.CastAsync(unchecked((uint)objectId), spell));
+                return;
+            }
+
+            AC.Dat.SpellInfo info = _runtime.Host.GameData?.IsAvailable == true ? _runtime.Host.GameData.GetSpell(spell) : null;
+            if (info != null && info.TargetType == 0)
+                Send(Game.CastUntargetedAsync(spell));
+            else
+                Send(Game.CastAsync(Character.Id, spell));
+        }
 
         public void RequestId(int objectId) => Send(Game.AppraiseAsync(unchecked((uint)objectId)));
 
@@ -211,8 +252,13 @@ namespace Decal.Adapter.Wrappers
 
         public void MoveItem(int objectId, int destinationId, int moveFlags) => MoveItem(objectId, destinationId, 0, true);
 
+        /// <summary>Hands an item to a player or NPC: the whole of a stack.</summary>
         public void GiveItem(int lObject, int lDestination)
-            => Send(Game.MoveToContainerAsync(unchecked((uint)lObject), unchecked((uint)lDestination), 0));
+        {
+            uint item = unchecked((uint)lObject);
+            int amount = _runtime.Host.World?.Get(item)?.StackSize ?? 1;
+            Send(Game.GiveAsync(item, unchecked((uint)lDestination), amount));
+        }
 
         public void SetCombatMode(CombatState newMode) => Send(Game.SetCombatModeAsync((CombatMode)(uint)newMode));
 
@@ -223,20 +269,26 @@ namespace Decal.Adapter.Wrappers
         public void SetAutorun(bool on) => Send(on ? Game.WalkForwardAsync() : Game.StopAsync());
 
         /// <summary>
-        /// Selects an object in the client. Selection is the client's alone - the protocol has no
-        /// message for it - so this cannot be done; it is noted, with what was asked for.
+        /// Selects an object. The client's own selection is the client's alone - the protocol has
+        /// no message for it - so the client's panels do not show it; but the choice stands for
+        /// what plugins do with a selection here - <see cref="CurrentSelection"/>, and a use on the
+        /// selection - until the player selects something in the client. That the client's own
+        /// cannot be set is noted, once, with what was asked for.
         /// </summary>
         public void SelectItem(int objectId)
         {
             PreviousSelection = CurrentSelection;
-            _runtime.NoteUnsupported("Actions.SelectItem", $"0x{objectId:X8}");
+            _chosen = unchecked((uint)objectId);
+            _clientWhenChosen = Character.SelectedId;
+            _runtime.SayOnce("select", $"used Actions.SelectItem on 0x{objectId:X8}: the game client's own selection cannot be set from outside it, so the client does not show it, but Decal plugins have it as the selection until the player selects something.");
         }
 
-        public bool FaceHeading(double heading, bool bUnknown)
-        {
-            _runtime.NoteUnsupported("Actions.FaceHeading");
-            return false;
-        }
+        /// <summary>
+        /// Turns the character where it stands to face a heading, in degrees clockwise from north,
+        /// by the game's turn keys (<see cref="Facing"/>): pressed through the overlay while plugins
+        /// may act. True when the turn has begun; it ends within a few degrees, or gives up.
+        /// </summary>
+        public bool FaceHeading(double heading, bool bUnknown) => _runtime.Facing.Face(heading);
 
         public bool RadianFaceHeading(double heading, bool bUnknown) => FaceHeading(heading * 180.0 / Math.PI, bUnknown);
 
@@ -248,7 +300,13 @@ namespace Decal.Adapter.Wrappers
 
         public void AutoWield(int item, int slot, int explic, int notexplic, int zero1, int zero2) => UseItem(item, 0);
 
-        public void Logout() => _runtime.NoteUnsupported("Actions.Logout");
+        /// <summary>
+        /// Logs out the current character and returns to the character selection screen, as
+        /// Decal's did - by the client's own Log Out where its keys can be pressed, else by the
+        /// message the client sends for it. CharacterFilter's Logoff follows, Requested then
+        /// Authorized, as for the player's own logout.
+        /// </summary>
+        public void Logout() => Send(Game.LogOutAsync());
 
         public void SetIdleTime(double timeout) => _runtime.NoteUnsupported("Actions.SetIdleTime");
 
@@ -262,17 +320,23 @@ namespace Decal.Adapter.Wrappers
 
         public void SalvagePanelSalvage() => _runtime.NoteUnsupported("Actions.SalvagePanelSalvage");
 
-        public void FellowshipRecruit(int lObjectID) => _runtime.NoteUnsupported("Actions.Fellowship");
+        /// <summary>Asks a player to join the fellowship, as its panel's Recruit does.</summary>
+        public void FellowshipRecruit(int lObjectID) => Send(Game.FellowshipRecruitAsync(unchecked((uint)lObjectID)));
 
-        public void FellowshipGrantLeader(int lObjectID) => _runtime.NoteUnsupported("Actions.Fellowship");
+        /// <summary>Makes another member the leader.</summary>
+        public void FellowshipGrantLeader(int lObjectID) => Send(Game.FellowshipAssignLeaderAsync(unchecked((uint)lObjectID)));
 
-        public void FellowshipSetOpen(bool IsOpen) => _runtime.NoteUnsupported("Actions.Fellowship");
+        /// <summary>Lets every member recruit, or only the leader.</summary>
+        public void FellowshipSetOpen(bool IsOpen) => Send(Game.FellowshipSetOpenAsync(IsOpen));
 
-        public void FellowshipQuit() => _runtime.NoteUnsupported("Actions.Fellowship");
+        /// <summary>Leaves the fellowship.</summary>
+        public void FellowshipQuit() => Send(Game.FellowshipQuitAsync(false));
 
-        public void FellowshipDisband() => _runtime.NoteUnsupported("Actions.Fellowship");
+        /// <summary>Ends the fellowship for everyone, as its leader; a member who is not the leader leaves it.</summary>
+        public void FellowshipDisband() => Send(Game.FellowshipQuitAsync(true));
 
-        public void FellowshipDismiss(int lObjectID) => _runtime.NoteUnsupported("Actions.Fellowship");
+        /// <summary>Dismisses a member, as the leader.</summary>
+        public void FellowshipDismiss(int lObjectID) => Send(Game.FellowshipDismissAsync(unchecked((uint)lObjectID)));
 
         public void TradeAccept() => _runtime.NoteUnsupported("Actions.Trade");
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -408,6 +409,241 @@ namespace AC.Host.Tests
             Assert.False(TypedLine.TryRead(Opcodes.GameAction, Convert.FromHexString("2A000000" + "5D000000" + Text("x")), out _));
             Assert.False(TypedLine.TryRead(Opcodes.GameEvent, talk, out _));
             Assert.False(TypedLine.TryRead(Opcodes.GameAction, Convert.FromHexString("2A000000"), out _));
+        }
+
+        // ------------------------------------------------------------------- chat emotes
+
+        /// <summary>
+        /// A ChatPoseTable as the client's archive lays it out (0x0E000007): its id, the poses and
+        /// the command each names, then the commands' words - a few of the client's own rows.
+        /// </summary>
+        private static byte[] PoseTable()
+        {
+            (string Pose, string Command)[] poses =
+            {
+                ("dance", "DrudgeDanceState"), ("wave", "Wave"), ("AFK", "AFKState"), ("smack head", "SmackHead"), ("come here", "Beckon"),
+            };
+            (string Command, string Mine, string Others)[] emotes =
+            {
+                ("DrudgeDanceState", "dance, \"Look at me! I'm dancin crazy!\"", "dances, \"Look at me! I'm dancin crazy!\""),
+                ("Wave", "wave.", "waves."),
+                ("AFKState", "decide to rest for a while.", "decides to rest for a while."),
+                ("SmackHead", "smack your head.", "smacks %p head."),
+                ("Beckon", "beckon, \"Come here!\"", "beckons, \"Come here!\""),
+            };
+
+            WireWriter table = new WireWriter(AC.Dat.ChatPoseTable.FileId).U16((ushort)poses.Length).U16(32);
+            foreach ((string pose, string command) in poses)
+                table.String16L(pose).String16L(command);
+            table.U16((ushort)emotes.Length).U16(16);
+            foreach ((string command, string mine, string others) in emotes)
+                table.String16L(command).String16L(mine).String16L(others);
+            return table.ToArray();
+        }
+
+        private static readonly AC.Dat.ChatPoseTable Poses = AC.Dat.ChatPoseTable.Parse(PoseTable());
+
+        [Fact]
+        public void TheClientsPoseTableNamesEachPosesEmoteAndItsWords()
+        {
+            Assert.Equal(5, Poses.Poses.Count);
+            AC.Dat.ChatEmote dance = Poses.Find("dance");
+            Assert.Equal("DrudgeDanceState", dance.Command);
+            Assert.Equal("dances, \"Look at me! I'm dancin crazy!\"", dance.Others);
+            Assert.Equal("dance, \"Look at me! I'm dancin crazy!\"", dance.Mine);
+
+            Assert.Equal("AFKState", Poses.Find("afk").Command);
+            Assert.Equal("Beckon", Poses.Find("Come Here").Command);
+            Assert.Null(Poses.Find("moonwalk"));
+            Assert.Null(AC.Dat.ChatPoseTable.Parse(PoseTable().AsSpan(0, 40)));
+        }
+
+        /// <summary>
+        /// "*dance*" is the emote's motion and its words for everyone else, the SoulEmote
+        /// (0x01E1); a lasting motion, a one-off one, "%p" for the character's gender, a pose with
+        /// spaces, and a word the table does not have said aloud.
+        /// </summary>
+        [Fact]
+        public void AChatEmoteIsItsMotionAndItsWordsForEveryoneElse()
+        {
+            ClientCommandContext context = new ClientCommandContext { ChatEmotes = Poses.Find };
+
+            ClientCommand dance = Parse("*dance*", context);
+            Assert.Equal(ClientCommandKind.Emote, dance.Kind);
+            Assert.Equal(0x43000144u, dance.Motion);
+            Assert.Equal(GameActions.SoulEmote, dance.Type);
+            Assert.Equal(Text("dances, \"Look at me! I'm dancin crazy!\""), Hex(dance.Fields));
+
+            Assert.Equal(0x13000087u, Parse("*wave*", context).Motion);
+            Assert.Equal(0x1300007Au, Parse("*come here*", context).Motion);
+            Assert.Equal("smacks his head.", Parse("*smack head*", context).EmoteText);
+            Assert.Equal("smacks her head.", Parse("*smack head*", new ClientCommandContext { ChatEmotes = Poses.Find, Gender = 2 }).EmoteText);
+
+            ClientCommand unknown = Parse("*moonwalk*", context);
+            Assert.Equal(GameActions.Talk, unknown.Type);
+            Assert.Equal(Text("*moonwalk*"), Hex(unknown.Fields));
+        }
+
+        [Fact]
+        public void EveryEmoteTheClientHasWordsForHasItsMotion()
+        {
+            string[] commands =
+            {
+                "Helper", "Cheer", "Shiver", "HaveASeat", "NudgeLeft", "ATOYOT", "Teapot", "Spit", "SmackHead", "ShakeFist",
+                "AtEaseState", "PossumState", "PointLeftState", "SitCrossleggedState", "SitState", "WAVESTATE", "CLAPHANDSSTATE",
+                "PrayState", "WindedState", "SurrenderState", "TapFootState", "SaluteState", "Wave", "PointState", "YawnStretch",
+                "WaveHigh", "HeartyLaugh", "MimeDrink", "YMCA", "WARMHANDS", "ClapHands", "BlowKiss", "PointRight", "PointLeft",
+                "NudgeRight", "MimeEat", "ScratchHead", "ShakeHead", "Nod", "DrudgeDance", "HaveASeatState", "ThinkerState",
+                "ReadState", "DrudgeDanceState", "PointDownState", "TalktotheHandState", "PointRightState", "SitBackState",
+                "MeditateState", "AFKState", "CurtseyState", "SNOWANGELSTATE", "SCRATCHHEADSTATE", "SHAKEFISTSTATE",
+                "CrossArmsState", "LeanState", "WoahState", "SlouchState", "PleadState", "KneelState", "Cringe", "AkimboState",
+                "BowDeepState", "BeSeeingYou", "WaveLow", "Shrug", "Laugh", "Cry", "Knock", "Mock", "ScanHorizon", "PointDown",
+                "Beckon", "Shoo",
+            };
+
+            // The 74 the client's ChatEmoteHash has, each a chat emote (0x02000000) of one class or the other.
+            Assert.Equal(74, commands.Length);
+            foreach (string command in commands)
+            {
+                uint motion = ChatEmoteCommands.Find(command);
+                Assert.True((motion & 0x02000000) != 0, command);
+                Assert.True(((motion & 0x10000000) != 0) ^ ((motion & 0x40000000) != 0), command);
+            }
+
+            Assert.Equal(0u, ChatEmoteCommands.Find("Moonwalk"));
+        }
+
+        /// <summary>The client's own tables, as far as the host answers for them: only the chat poses.</summary>
+        private sealed class PoseData : IGameData
+        {
+            public bool IsAvailable => true;
+
+            public string GetSpellName(uint spellId) => null;
+
+            public System.Drawing.Color? GetSlotColor(uint paletteId, int offset, int length) => null;
+
+            public bool TryGetSkillFormula(uint skillId, out uint attribute1, out uint attribute2, out uint divisor)
+            {
+                attribute1 = attribute2 = divisor = 0;
+                return false;
+            }
+
+            public bool TryGetVitalFormula(uint vitalId, out uint attribute1, out uint attribute2, out uint divisor)
+                => TryGetSkillFormula(vitalId, out attribute1, out attribute2, out divisor);
+
+            public AC.Dat.SpellInfo GetSpell(uint spellId) => null;
+
+            public IReadOnlyCollection<AC.Dat.SpellInfo> Spells => Array.Empty<AC.Dat.SpellInfo>();
+
+            public IReadOnlyList<AC.Dat.SpellInfo> GetSpellsInCategory(uint category) => Array.Empty<AC.Dat.SpellInfo>();
+
+            public AC.Dat.SpellInfo FindSpell(string name) => null;
+
+            public AC.Dat.SpellComponentInfo GetComponent(uint componentId) => null;
+
+            public AC.Dat.ChatEmote GetChatEmote(string pose) => Poses.Find(pose);
+        }
+
+        /// <summary>A host whose character stands where the client last said, in <paramref name="motion"/>.</summary>
+        private static (GameHost Host, SendingTransport Transport) EmoteHost(ClientMotionState motion)
+        {
+            (GameHost host, SendingTransport transport) = Host();
+            host.WorldState.GameData = new PoseData();
+            host.WorldState.SetClientMotion(motion, new Location(0xA9B4001F, 10f, 20f, 30f, 1f, 0f, 0f, 0f),
+                new MovementSequences(4, 5, 6, 7, 1));
+            return (host, transport);
+        }
+
+        private static ClientMotionState Standing(uint style = ChatEmoteCommands.NonCombat, uint forward = 0)
+            => new ClientMotionState
+            {
+                Flags = MotionFlags.CurrentHoldKey | MotionFlags.CurrentStyle | (forward != 0 ? MotionFlags.ForwardCommand : 0),
+                CurrentHoldKey = 2,
+                CurrentStyle = style,
+                ForwardCommand = forward,
+            };
+
+        /// <summary>What follows a MoveToState's motion: where the client stood, its sequences and its contact.</summary>
+        private const string Where = "1F00B4A9" + "00002041" + "0000A041" + "0000F041" + "0000803F" + "00000000" + "00000000" + "00000000"
+            + "0400" + "0500" + "0600" + "0700" + "01000000";
+
+        /// <summary>
+        /// "*wave*" goes as the client sent it: a MoveToState standing where the client stood, the
+        /// wave as one action after the fields - its low half, a stamp marked the client's, speed 1 -
+        /// then the SoulEmote with the words.
+        /// </summary>
+        [Fact]
+        public void AWaveIsAnActionInAMoveToStateThenTheWords()
+        {
+            (GameHost host, SendingTransport transport) = EmoteHost(Standing());
+
+            Assert.Equal(ChatCommandOutcome.Sent, host.RunChatCommand("*wave*", null));
+
+            Assert.Equal(2, transport.Sent.Count);
+            Assert.Equal("1CF60000" + "03080000" + "02000000" + "3D000080" + "8700" + "0180" + "0000803F" + Where,
+                Convert.ToHexString(transport.Sent[0].Payload.Span.Slice(4)));
+            Assert.Equal("E1010000" + Text("waves."), Convert.ToHexString(transport.Sent[1].Payload.Span.Slice(4)));
+        }
+
+        /// <summary>"*dance*" is a state the character stays in: the forward command, with no actions.</summary>
+        [Fact]
+        public void ADanceIsTheForwardCommand()
+        {
+            (GameHost host, SendingTransport transport) = EmoteHost(Standing());
+
+            host.RunChatCommand("*dance*", null);
+
+            Assert.Equal("1CF60000" + "07000000" + "02000000" + "3D000080" + "44010043" + Where,
+                Convert.ToHexString(transport.Sent[0].Payload.Span.Slice(4)));
+            Assert.Equal(GameActions.SoulEmote, BitConverter.ToUInt32(transport.Sent[1].Payload.Span.Slice(4)));
+        }
+
+        /// <summary>
+        /// In a combat stance or walking the client refused the motion in its own words, and sent
+        /// the words of the emote all the same.
+        /// </summary>
+        [Theory]
+        [InlineData(0x8000003Cu, 0u, "You can't use chat emotes in combat mode")]
+        [InlineData(ChatEmoteCommands.NonCombat, 0x45000005u, "You can't use chat emotes from this position")]
+        public void AnEmoteTheClientWouldNotPlayIsOnlyItsWords(uint style, uint forward, string refusal)
+        {
+            (GameHost host, SendingTransport transport) = EmoteHost(Standing(style, forward));
+
+            Assert.Equal(ChatCommandOutcome.Sent, host.RunChatCommand("*wave*", null));
+
+            Assert.Equal(GameActions.SoulEmote, BitConverter.ToUInt32(transport.Sent.Single().Payload.Span.Slice(4)));
+            Assert.Contains(refusal, Encoding.Latin1.GetString(transport.Shown.Single().Payload.ToArray()));
+        }
+
+        /// <summary>Without the client's archive no emote can be told from any other line, and none is sent.</summary>
+        [Fact]
+        public void WithoutTheClientsTablesAnEmoteIsOutOfReach()
+        {
+            (GameHost host, SendingTransport transport) = Host();
+
+            Assert.Equal(ChatCommandOutcome.ClientOnly, host.RunChatCommand("*dance*", null));
+            Assert.Empty(transport.Sent);
+        }
+
+        /// <summary>
+        /// The client's own MoveToState with an emote in it is read whole: the action, then the
+        /// position after it, where it would otherwise have been read from the action's bytes.
+        /// </summary>
+        [Fact]
+        public void TheClientsOwnEmoteIsReadWithItsPosition()
+        {
+            WorldState world = new WorldState(() => DateTimeOffset.UnixEpoch);
+            byte[] move = Convert.FromHexString("05000000" + "1CF60000" + "03080000" + "01000000" + "3D000080" + "8700" + "0280" + "0000803F" + Where);
+
+            MessageDecoder.Apply(AcMessage.Create(Opcodes.GameAction, move), PacketDirection.Outbound, world);
+
+            ClientMotionState motion = world.Character.Motion;
+            Assert.Equal(MotionFlags.CurrentHoldKey | MotionFlags.CurrentStyle, motion.Flags);
+            Assert.Equal((ushort)0x0087, motion.Actions.Single().Command);
+            Assert.Equal((ushort)0x8002, motion.Actions.Single().Stamp);
+            Assert.Equal(0xA9B4001Fu, world.Character.Location.Value.LandblockCell);
+            Assert.Equal(20f, world.Character.Location.Value.Y);
+            Assert.Equal((ushort)7, world.Character.Sequences.ForcePosition);
         }
     }
 }

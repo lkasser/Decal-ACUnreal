@@ -4,7 +4,10 @@
        looks its folder up in Decal's registry through the 64-bit view and finds nothing, reports
        that with a message box as Virindi's did, reports a missing stand-in type in chat, and has
        a login handler that throws. So the compatibility layer's account of why a plugin is
-       unwell is tested against a plugin that is, rather than against a description of one. -->
+       unwell is tested against a plugin that is, rather than against a description of one.
+       LegacyCalls holds what Mag-Tools does that the host answers otherwise - the player's
+       Documents, an XmlSerializer of a list of its own type, Decal.dll's DispatchOnChatCommand -
+       for the tests of the working copy's rewrite. -->
   <PropertyGroup>
     <AssemblyName>TroubledPlugin</AssemblyName>
     <RootNamespace>TroubledPlugin</RootNamespace>

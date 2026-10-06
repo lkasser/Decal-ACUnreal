@@ -39,7 +39,7 @@ namespace AC.Host.Tests
         private const string RoyalGuard = "Royal Guard tells you, \\\"Kill 15";
 
         /// <summary>ChaosControl's remote recall, by speech or tell, with or without the link.</summary>
-        private const string RemoteRecall = "^.*(Xao|Bob|You).* (say|says|tells you|think), \\\"!ls\\\"$";
+        private const string RemoteRecall = "^.*(Character Y|Bob|You).* (say|says|tells you|think), \\\"!ls\\\"$";
 
         [Fact]
         public void APlayersTellCarriesTheNameLinkAndMatchesTheMetasThatReadIt()

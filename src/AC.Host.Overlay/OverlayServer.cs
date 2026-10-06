@@ -311,18 +311,63 @@ namespace AC.Host.Overlay
         /// </summary>
         public void PublishInput(System.Collections.Generic.IEnumerable<int> held)
         {
-            OverlayInput input = new OverlayInput();
-            if (held != null)
-                input.Held.AddRange(held);
-
             lock (_gate)
             {
-                input.Sequence = ++_inputSequence;
-                _input = Frame(OverlayJson.ToJson(input));
+                _held = held == null ? new System.Collections.Generic.List<int>() : new System.Collections.Generic.List<int>(held);
+                PublishInputLocked();
             }
 
             _outgoing.Writer.TryWrite(InputChanged);
         }
+
+        /// <summary>
+        /// How long a click rides in the input frames after it is asked for: long enough that a
+        /// frame lost or dropped for a newer one cannot lose it, short enough that an overlay
+        /// attaching afterwards is not sent a click meant for the game as it was.
+        /// </summary>
+        public static readonly TimeSpan ClickLasts = TimeSpan.FromSeconds(3);
+
+        /// <summary>
+        /// Asks the overlay to click in the game's window, once (<see cref="OverlayClick"/>). Its
+        /// id is set here, different from every click any host has asked for before, and goes
+        /// out with the keys held now - and with every change of them for <see cref="ClickLasts"/>.
+        /// </summary>
+        /// <returns>The click's id.</returns>
+        public long PublishClick(OverlayClick click)
+        {
+            if (click == null) throw new ArgumentNullException(nameof(click));
+
+            lock (_gate)
+            {
+                // Milliseconds since 1970, or one more than the last: a host started afresh never
+                // repeats an id an overlay has already clicked for.
+                _clickId = Math.Max(_clickId + 1, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                click.Id = _clickId;
+                _click = click;
+                _clickAskedMs = Environment.TickCount64;
+                PublishInputLocked();
+            }
+
+            _outgoing.Writer.TryWrite(InputChanged);
+            return click.Id;
+        }
+
+        private void PublishInputLocked()
+        {
+            OverlayInput input = new OverlayInput();
+            input.Held.AddRange(_held);
+            if (_click != null && Environment.TickCount64 - _clickAskedMs < (long)ClickLasts.TotalMilliseconds)
+                input.Click = _click;
+
+            input.Sequence = ++_inputSequence;
+            _input = Frame(OverlayJson.ToJson(input));
+        }
+
+        /// <summary>The keys last asked to be held, and the last click and when it was asked for; under the gate.</summary>
+        private System.Collections.Generic.List<int> _held = new System.Collections.Generic.List<int>();
+        private OverlayClick _click;
+        private long _clickAskedMs;
+        private long _clickId;
 
         /// <summary>How many distinct images have been published.</summary>
         public int ImageCount

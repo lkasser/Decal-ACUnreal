@@ -27,7 +27,10 @@ namespace Decal.Compat
     /// flag cleared; everything else from where it is, since that is where a Decal plugin looks
     /// for its own files. A plugin from Decal's registry is loaded from its working copy
     /// (<see cref="WorkingCopy"/>), where the flag is already cleared, so never from the
-    /// player's install.
+    /// player's install. One from Decal Compat's own folder has no working copy, so its DLLs are
+    /// treated here as a working copy's are, and one whose calls that changes is loaded from a
+    /// treated copy too: Mag-Filter, built from its sources, keeps its settings in the player's
+    /// Documents, which must be the stand-in for them when the host is given one.
     /// </para>
     ///
     /// <para>
@@ -39,13 +42,18 @@ namespace Decal.Compat
     /// </remarks>
     internal sealed class DecalPluginLoadContext : AssemblyLoadContext
     {
-        private readonly IReadOnlyDictionary<string, Assembly> _shims;
+        private readonly IReadOnlyDictionary<string, Func<Assembly>> _shims;
         private readonly string _sourceDirectory;
         private readonly string _copyDirectory;
         private readonly Func<string, Assembly> _otherPlugins;
         private readonly IReadOnlyList<string> _nativeFolders;
         private readonly List<string> _nativeProblems = new List<string>();
 
+        /// <param name="shims">
+        /// The stand-ins by assembly name, each loaded only when a plugin first asks for it: one a
+        /// plugin finds among the loaded assemblies is one it uses, so the Virindi HUDs stand-in is
+        /// there only once a plugin that names it has asked.
+        /// </param>
         /// <param name="otherPlugins">
         /// Finds another running Decal plugin's assembly by name. Decal ran every plugin in one
         /// domain, and plugins that work together - Mag-Tools with Virindi's, Virindi's with each
@@ -56,8 +64,15 @@ namespace Decal.Compat
         /// that is built for another processor or missing - a 64-bit sqlite3.dll for the 32-bit one
         /// Virindi's tools ship.
         /// </param>
-        internal DecalPluginLoadContext(string name, IReadOnlyDictionary<string, Assembly> shims, string sourceDirectory, string copyDirectory,
-                                        Func<string, Assembly> otherPlugins = null, IReadOnlyList<string> nativeFolders = null)
+        /// <param name="treat">
+        /// Whether its DLLs are treated as a registered plugin's working copy has them treated
+        /// (<see cref="WorkingCopy.Treat"/>) - its calls of the player's folders, the XML serializer
+        /// and Decal.dll pointed at this host's, its registry reads and address arithmetic put
+        /// right - and loaded from a treated copy when that changes anything: for a plugin from
+        /// Decal Compat's own folder, which runs where it is and has no working copy.
+        /// </param>
+        internal DecalPluginLoadContext(string name, IReadOnlyDictionary<string, Func<Assembly>> shims, string sourceDirectory, string copyDirectory,
+                                        Func<string, Assembly> otherPlugins = null, IReadOnlyList<string> nativeFolders = null, bool treat = false)
             : base("Decal: " + name, isCollectible: true)
         {
             _shims = shims;
@@ -65,7 +80,10 @@ namespace Decal.Compat
             _copyDirectory = copyDirectory;
             _otherPlugins = otherPlugins;
             _nativeFolders = nativeFolders ?? Array.Empty<string>();
+            _treat = treat;
         }
+
+        private readonly bool _treat;
 
         /// <summary>The plugin's own assembly, once loaded.</summary>
         internal Assembly MainAssembly { get; private set; }
@@ -103,8 +121,8 @@ namespace Decal.Compat
 
         protected override Assembly Load(AssemblyName name)
         {
-            if (name.Name != null && _shims.TryGetValue(name.Name, out Assembly shim))
-                return shim;
+            if (name.Name != null && _shims.TryGetValue(name.Name, out Func<Assembly> shim))
+                return shim();
 
             // Before the host's own: .NET's System.Drawing is only the colours and rectangles,
             // and a plugin that draws bitmaps needs the whole of it. Both forward the colours to
@@ -205,8 +223,9 @@ namespace Decal.Compat
         }
 
         /// <summary>
-        /// Where to load an assembly from: where it is, unless it is marked x86-only, in which
-        /// case a copy with the mark cleared.
+        /// Where to load an assembly from: where it is, unless it is marked x86-only or - for a
+        /// plugin from the folder - makes calls this host answers otherwise, in which case a
+        /// corrected copy.
         /// </summary>
         /// <remarks>
         /// From where it is by preference, because Decal plugins find their own files - an ini,
@@ -218,7 +237,18 @@ namespace Decal.Compat
         private string PathForLoading(string path)
         {
             byte[] image = File.ReadAllBytes(path);
-            if (!ClearRequires32Bit(image))
+            bool x86 = ClearRequires32Bit(image);
+
+            bool treated = false;
+            if (_treat)
+            {
+                byte[] before = image;
+                foreach (string problem in WorkingCopy.Treat(ref image))
+                    _treatProblems.Add($"{Path.GetFileName(path)}: {problem}");
+                treated = !ReferenceEquals(before, image);
+            }
+
+            if (!x86 && !treated)
                 return path;
 
             Directory.CreateDirectory(_copyDirectory);
@@ -232,12 +262,21 @@ namespace Decal.Compat
                     File.Copy(file, beside);
             }
 
-            CopiedForX86 = true;
+            CopiedForX86 |= x86;
+            CopiedTreated |= treated;
             return copy;
         }
 
-        /// <summary>Whether anything had to be loaded from a corrected copy.</summary>
+        private readonly List<string> _treatProblems = new List<string>();
+
+        /// <summary>Whether anything had to be loaded from a copy with its x86-only mark cleared.</summary>
         internal bool CopiedForX86 { get; private set; }
+
+        /// <summary>Whether anything of a folder plugin's had to be loaded from a copy with its calls pointed at this host's.</summary>
+        internal bool CopiedTreated { get; private set; }
+
+        /// <summary>What could not be treated in a folder plugin's DLLs, and why, one line each.</summary>
+        internal IReadOnlyList<string> TreatProblems => _treatProblems;
 
         /// <summary>
         /// Clears COMIMAGE_FLAGS_32BITREQUIRED in an IL-only image, in place. An image with

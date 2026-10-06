@@ -66,6 +66,13 @@ namespace AC.Host.World
         /// client's data.
         /// </summary>
         long? GetLevelExperience(int level) => null;
+
+        /// <summary>
+        /// The chat emote a word between asterisks names - "dance" for "*dance*" - from the
+        /// client's ChatPoseTable: the motion it plays and its words. Null for a word that is no
+        /// emote, or without the client's data.
+        /// </summary>
+        ChatEmote GetChatEmote(string pose) => null;
     }
 
     /// <summary>Answers nothing, for a host running without the client's files.</summary>
@@ -174,6 +181,8 @@ namespace AC.Host.World
 
         public long? GetLevelExperience(int level)
             => _portal != null && level >= 1 && level < _portal.LevelExperience.Count ? _portal.LevelExperience[level] : null;
+
+        public ChatEmote GetChatEmote(string pose) => _portal?.ChatPoses?.Find(pose);
 
         /// <summary>The families and names, indexed the first time anything asks: six thousand spells, looked up often.</summary>
         private SpellIndex Index => _index ??= new SpellIndex(_portal);

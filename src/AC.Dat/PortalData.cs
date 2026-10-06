@@ -49,6 +49,12 @@ namespace AC.Dat
         /// </summary>
         public IReadOnlyList<long> LevelExperience { get; private set; } = Array.Empty<long>();
 
+        /// <summary>
+        /// The chat emotes - "*dance*", "*wave*" - and their words: <see cref="ChatPoseTable"/>'s.
+        /// Null when the archive has no table.
+        /// </summary>
+        public ChatPoseTable ChatPoses { get; private set; }
+
         public string Path => _dat.Path;
 
         public int FileCount => _dat.FileCount;
@@ -76,6 +82,7 @@ namespace AC.Dat
                 byte[] componentData = dat.Read(SpellComponentTable.FileId);
                 byte[] vitalData = dat.Read(VitalTable.FileId);
                 byte[] experienceData = dat.Read(ExperienceTable.FileId);
+                byte[] poseData = dat.Read(ChatPoseTable.FileId);
 
                 return new PortalData(dat, spells, skills)
                 {
@@ -88,6 +95,7 @@ namespace AC.Dat
                     LevelExperience = experienceData != null
                         ? ExperienceTable.ParseLevels(experienceData)
                         : Array.Empty<long>(),
+                    ChatPoses = poseData != null ? ChatPoseTable.Parse(poseData) : null,
                 };
             }
             catch

@@ -133,6 +133,31 @@ namespace AC.Host.Tests
             Assert.Equal((uint)chatType, line.ChatType);
         }
 
+        /// <summary>
+        /// A link the old client drew - Mag-Tools' item line, with its closing tag's two
+        /// backslashes; the server's own around a speaker's name - arrives as the text it was
+        /// around, as the old client showed it: AC:Unreal's chat has no links and would show the
+        /// markup. Mag-Tools' "&lt;{Mag-Tools}&gt;" is its name, not markup, and stays.
+        /// </summary>
+        [Theory]
+        [InlineData(@"<Tell:IIDString:221112:-2147399821>-<\\Tell> Black Opal Heavy Bracelet, Legendary Frost Ward, Wield Lvl 150",
+                    "- Black Opal Heavy Bracelet, Legendary Frost Ward, Wield Lvl 150")]
+        [InlineData(@"<Tell:IIDString:221112:-2024140046>+(Epics)<\\Tell> Ivory Ring", "+(Epics) Ivory Ring")]
+        [InlineData(@"<Tell:IIDString:1343111160:Character Y>Character Y<\Tell> says, ""hello""", @"Character Y says, ""hello""")]
+        [InlineData(@"[Allegiance] <Tell:IIDString:0:Thrungus>Thrungus<\Tell> says, ""kk""", @"[Allegiance] Thrungus says, ""kk""")]
+        [InlineData("<{Mag-Tools}>: Plugin now online.", "<{Mag-Tools}>: Plugin now online.")]
+        [InlineData("a < b > c, and Tell me", "a < b > c, and Tell me")]
+        public async Task AChatLinkArrivesAsItsText(string text, string shown)
+        {
+            ShowingTransport transport = new ShowingTransport();
+            await using GameHost host = Host(transport, out _);
+
+            Assert.True(host.ShowInGame(text, 14));
+
+            Assert.Equal(shown, ReadBack(Assert.Single(transport.Shown)).Text);
+            Assert.Equal(shown, ChatMarkup.Visible(text));
+        }
+
         [Fact]
         public async Task APluginsLineIsRefusedLikeTheHostsWhenNothingCanBeShown()
         {

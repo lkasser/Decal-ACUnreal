@@ -6,7 +6,9 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using AC.Host.Actions;
 using AC.Host.Plugins;
+using AC.Host.World;
 
 namespace AC.Host.Runtime
 {
@@ -17,7 +19,8 @@ namespace AC.Host.Runtime
     /// </summary>
     /// <remarks>
     /// A named pipe, so only this machine's user can reach it. One line in, text back, then
-    /// the connection closes. Every command runs on the host's game thread, like a click in
+    /// the connection closes; several askers are answered at once, so one waiting on a logout
+    /// does not keep the rest out. Every command runs on the host's game thread, like a click in
     /// Decal's window. Whichever program runs the host serves it - achost or the Decal Agent -
     /// so <c>achost ctl</c> drives either.
     /// </remarks>
@@ -70,19 +73,44 @@ namespace AC.Host.Runtime
 
         public void Start() => _loop = Task.Run(() => ServeAsync(_stop.Token));
 
+        /// <summary>
+        /// How many askers are answered at once. A `ctl logout` waits up to <see cref="SessionWait"/>
+        /// for its answer, and whatever else is asked meanwhile - a script polling where the
+        /// character is - is answered beside it, not told there is no host.
+        /// </summary>
+        public const int AnsweredAtOnce = 8;
+
+        /// <summary>The instances of the pipe this host has open, listening or answering.</summary>
+        private int _open;
+
         private async Task ServeAsync(CancellationToken stop)
         {
+            using SemaphoreSlim room = new SemaphoreSlim(AnsweredAtOnce);
             while (!stop.IsCancellationRequested)
             {
+                try
+                {
+                    await room.WaitAsync(stop).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
                 NamedPipeServerStream opened;
                 try
                 {
-                    opened = new NamedPipeServerStream(_name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                    // The first instance this host opens claims the name, and fails if another host
+                    // already has it; the rest are opened beside it while it is still held.
+                    PipeOptions options = PipeOptions.Asynchronous | (Volatile.Read(ref _open) == 0 ? PipeOptions.FirstPipeInstance : PipeOptions.None);
+                    opened = new NamedPipeServerStream(_name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte, options);
+                    Interlocked.Increment(ref _open);
                 }
                 catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
                 {
                     // Another host already serves this name. Trying again at once would spin a
                     // core for as long as that one runs, so wait, and take the name when it goes.
+                    room.Release();
                     try
                     {
                         await Task.Delay(1000, stop).ConfigureAwait(false);
@@ -97,49 +125,108 @@ namespace AC.Host.Runtime
 
                 try
                 {
-                    using NamedPipeServerStream pipe = opened;
-                    await pipe.WaitForConnectionAsync(stop).ConfigureAwait(false);
+                    await opened.WaitForConnectionAsync(stop).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException || ex is IOException)
+                {
+                    Close(opened, room);
+                    if (ex is OperationCanceledException)
+                        return;
+                    continue;
+                }
 
-                    using StreamReader reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
-
-                    string line = await reader.ReadLineAsync(stop).ConfigureAwait(false);
-                    string reply = await RunAsync(line ?? string.Empty).ConfigureAwait(false);
-                    await pipe.WriteAsync(new UTF8Encoding(false).GetBytes(reply), stop).ConfigureAwait(false);
-                    pipe.WaitForPipeDrain();
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-                catch (IOException)
-                {
-                    // The other end went away mid-command; wait for the next.
-                }
-                catch (TimeoutException)
-                {
-                    // The game thread did not answer in time. The asker gives up by itself; the
-                    // pipe must not stop serving everyone after it.
-                }
+                // Answered beside the wait for the next asker, which begins at once.
+                _ = Task.Run(() => AnswerAsync(opened, room, stop));
             }
         }
 
-        /// <summary>Runs one command on the game thread and returns what to print.</summary>
-        internal Task<string> RunAsync(string line)
+        /// <summary>One asker: its line read, run on the game thread, and the answer written back.</summary>
+        private async Task AnswerAsync(NamedPipeServerStream pipe, SemaphoreSlim room, CancellationToken stop)
         {
-            TaskCompletionSource<string> done = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            try
+            {
+                using StreamReader reader = new StreamReader(pipe, Encoding.UTF8, false, 1024, leaveOpen: true);
+
+                string line = await reader.ReadLineAsync(stop).ConfigureAwait(false);
+                string reply = await RunAsync(line ?? string.Empty).ConfigureAwait(false);
+                await pipe.WriteAsync(new UTF8Encoding(false).GetBytes(reply), stop).ConfigureAwait(false);
+                pipe.WaitForPipeDrain();
+            }
+            catch (OperationCanceledException)
+            {
+                // The host is stopping.
+            }
+            catch (IOException)
+            {
+                // The other end went away mid-command.
+            }
+            catch (TimeoutException)
+            {
+                // The game thread did not answer in time. The asker gives up by itself; the
+                // pipe must not stop serving everyone after it.
+            }
+            finally
+            {
+                Close(pipe, room);
+            }
+        }
+
+        private void Close(NamedPipeServerStream pipe, SemaphoreSlim room)
+        {
+            pipe.Dispose();
+            Interlocked.Decrement(ref _open);
+            try
+            {
+                room.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The host stopped serving while this asker was answered.
+            }
+        }
+
+        /// <summary>
+        /// How long <c>ctl logout</c> and <c>ctl login</c> wait for how it ends before answering
+        /// that it is still under way: inside the asker's thirty seconds, and longer than a logout
+        /// takes - the server's six, the client's three to settle, three more if its key did nothing.
+        /// </summary>
+        public static readonly TimeSpan SessionWait = TimeSpan.FromSeconds(25);
+
+        /// <summary>Runs one command on the game thread and returns what to print.</summary>
+        internal async Task<string> RunAsync(string line)
+        {
+            TaskCompletionSource<Task<string>> started = new TaskCompletionSource<Task<string>>(TaskCreationOptions.RunContinuationsAsynchronously);
             _host.RunOnGameThread(() =>
             {
                 try
                 {
-                    done.TrySetResult(Execute(line.Trim()));
+                    started.TrySetResult(ExecuteAsync(line.Trim()));
                 }
                 catch (Exception ex)
                 {
-                    done.TrySetResult("failed: " + ex.Message);
+                    started.TrySetResult(Task.FromResult("failed: " + ex.Message));
                 }
             });
 
-            return done.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // A logout or a login is started on the game thread and then waited for off it, so the
+            // game goes on while it does.
+            Task<string> answer = await started.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            return await answer.ConfigureAwait(false);
+        }
+
+        /// <summary>Game thread only: what a command answers, now or once it has run its course.</summary>
+        private Task<string> ExecuteAsync(string line)
+        {
+            string[] words = line.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string verb = words.Length > 0 ? words[0].ToLowerInvariant() : string.Empty;
+            string rest = words.Length > 1 ? words[1] : string.Empty;
+
+            return verb switch
+            {
+                "logout" => LogOut(rest),
+                "login" => LogIn(rest),
+                _ => Task.FromResult(Execute(line)),
+            };
         }
 
         /// <summary>Game thread only.</summary>
@@ -234,6 +321,12 @@ namespace AC.Host.Runtime
                 case "windows":
                     return Windows();
 
+                case "characters":
+                    return Characters();
+
+                case "window":
+                    return GameWindow(rest);
+
                 case "set":
                 case "press":
                 case "click":
@@ -245,17 +338,135 @@ namespace AC.Host.Runtime
 
                 default:
                     return "commands: status | plugins | act [on|off] | reload [name|*] | enable <name> | disable <name> | rescan" + Environment.NewLine
-                        + "          find <name> | chat [lines] | windows | view <plugin>[/<window>] [filter]" + Environment.NewLine
+                        + "          find <name> | chat [lines] | windows | view <plugin>[/<window>] [filter] | window [keep on|off]" + Environment.NewLine
                         + "          say <line> | hotkey <plugin> <id> | exit" + Environment.NewLine
+                        + "          characters | logout [keys|messages] | login <name|id|number> [keys|messages]" + Environment.NewLine
                         + "          set <plugin> <control> <value> | press <plugin> <control> | click <plugin> <list> <row> <column> | page <plugin> <notebook> <page>";
             }
         }
 
+        // ------------------------------------------------------------------- the character list
+
         /// <summary>
-        /// The objects whose names contain <paramref name="text"/>, as the host knows them: where
-        /// each is, and who holds or wields it. For answering "does the host think I am holding
-        /// that?" while the game runs.
+        /// Logs the character out to the character list, and answers how that ended - or that it is
+        /// still under way, after <see cref="SessionWait"/>. Always by the message: "keys" is read,
+        /// and the log says why it cannot be had (<see cref="SessionRoute.Keys"/>). Game thread
+        /// only, up to the wait.
         /// </summary>
+        private Task<string> LogOut(string rest)
+        {
+            if (_host.Session == null)
+                return Task.FromResult("this host cannot act, so it cannot log out");
+
+            if (!TryReadRoute(rest.Trim(), out SessionRoute route, out string unread) || unread.Length > 0)
+                return Task.FromResult("logout takes nothing, or keys or messages");
+
+            SessionRequest request = _host.Session.BeginLogOut(route, out string refusal);
+            return request == null ? Task.FromResult("cannot log out: " + refusal) : AwaitAsync(request);
+        }
+
+        /// <summary>
+        /// Enters the world as one of the account's characters - by its name, its id or its number
+        /// in `ctl characters` - and answers how that ended, or that it is still under way. Always
+        /// by the character select's own Enter, clicked: a last word "messages" is read, and the
+        /// log says why it cannot be had (<see cref="SessionRoute.Messages"/>). Game thread only,
+        /// up to the wait.
+        /// </summary>
+        private Task<string> LogIn(string rest)
+        {
+            if (_host.Session == null)
+                return Task.FromResult("this host cannot act, so it cannot enter the world");
+
+            TryReadRoute(rest.Trim(), out SessionRoute route, out string named);
+            if (named.Length == 0)
+                return Task.FromResult("login which character? `characters` lists them");
+
+            AccountCharacter character = AccountCharacter.Find(_host.World.AccountCharacters, named);
+            if (character == null)
+            {
+                return Task.FromResult(_host.World.AccountCharacters.Count == 0
+                    ? "no characters are known: the character list has not come since the host started"
+                    : $"no one character is \"{named}\"; `characters` lists them");
+            }
+
+            SessionRequest request = _host.Session.BeginEnterWorld(character.Id, route, out string refusal);
+            return request == null ? Task.FromResult("cannot enter the world: " + refusal) : AwaitAsync(request);
+        }
+
+        /// <summary>
+        /// The way a logout or a login is to go, read off the end of the line: "keys", "messages", or
+        /// "auto"; Auto when the line ends otherwise. <paramref name="rest"/> is what comes before it.
+        /// </summary>
+        internal static bool TryReadRoute(string line, out SessionRoute route, out string rest)
+        {
+            route = SessionRoute.Auto;
+            rest = line ?? string.Empty;
+
+            int space = rest.LastIndexOf(' ');
+            string last = space < 0 ? rest : rest.Substring(space + 1);
+            SessionRoute? named = last.ToLowerInvariant() switch
+            {
+                "keys" => SessionRoute.Keys,
+                "messages" => SessionRoute.Messages,
+                "auto" => SessionRoute.Auto,
+                _ => null,
+            };
+
+            if (named == null)
+                return rest.Length == 0;
+
+            route = named.Value;
+            rest = space < 0 ? string.Empty : rest.Substring(0, space).Trim();
+            return true;
+        }
+
+        /// <summary>How a logout or a login ended, or where it stands after <see cref="SessionWait"/>.</summary>
+        private static async Task<string> AwaitAsync(SessionRequest request)
+        {
+            Task done = await Task.WhenAny(request.Finished, Task.Delay(SessionWait)).ConfigureAwait(false);
+            return done == request.Finished
+                ? request.Outcome
+                : $"still under way after {SessionWait.TotalSeconds:0} s: {request}. `status` says how it ends.";
+        }
+
+        /// <summary>The account's characters as the character list gave them, numbered as `login` takes them.</summary>
+        private string Characters()
+        {
+            IReadOnlyList<AccountCharacter> characters = _host.World.AccountCharacters;
+            if (characters.Count == 0)
+                return "no characters are known: the character list has not come since the host started";
+
+            StringBuilder text = new StringBuilder();
+            text.AppendLine($"account    {_host.World.AccountName}");
+            for (int i = 0; i < characters.Count; i++)
+            {
+                AccountCharacter character = characters[i];
+                string state = character.Id == _host.Character.Id && _host.Character.Id != 0
+                    ? "in the world"
+                    : character.DeleteTimeout != 0 ? $"being deleted, {character.DeleteTimeout} s left" : string.Empty;
+                text.AppendLine($"{i + 1,3}  0x{character.Id:X8}  {character.Name,-24} {state}".TrimEnd());
+            }
+
+            return text.ToString();
+        }
+
+        /// <summary>Where the session stands, for `status`.</summary>
+        private string SessionLine()
+        {
+            IWorldView world = _host.World;
+            string who = string.IsNullOrEmpty(_host.Character.Name) ? $"0x{_host.Character.Id:X8}" : _host.Character.Name;
+            return world.Phase switch
+            {
+                SessionPhase.CharacterList => $"at the character list (account {world.AccountName}, {world.AccountCharacters.Count} character(s))",
+                SessionPhase.EnteringWorld => _host.WorldState.EnteringCharacterId != 0
+                    ? $"entering the world as 0x{_host.WorldState.EnteringCharacterId:X8}"
+                    : "entering the world",
+                SessionPhase.InWorld => _host.Character.Id != 0 ? "in the world as " + who : "in the world (the character not yet known)",
+                SessionPhase.LoggingOff => "logging off " + who,
+                _ => "no session seen",
+            };
+        }
+
         /// <summary>
         /// Asks whoever started the host to stop it. The answer goes back first: the stopping
         /// closes this very pipe, and waits for the game thread this runs on.
@@ -274,6 +485,11 @@ namespace AC.Host.Runtime
             return "exiting";
         }
 
+        /// <summary>
+        /// The objects whose names contain <paramref name="text"/>, as the host knows them: where
+        /// each is, and who holds or wields it. For answering "does the host think I am holding
+        /// that?" while the game runs.
+        /// </summary>
         private string Find(string text)
         {
             if (string.IsNullOrWhiteSpace(text))
@@ -566,6 +782,14 @@ namespace AC.Host.Runtime
             StringBuilder text = new StringBuilder();
             text.AppendLine($"server     {(string.IsNullOrEmpty(_host.World.ServerName) ? "(not connected)" : _host.World.ServerName)}");
             text.AppendLine($"character  {(_host.Character.Id == 0 ? "(not logged in)" : _host.Character.Name)}");
+            text.AppendLine($"phase      {SessionLine()}");
+
+            // A logout or a login under way, or how the last one ended; and the client's own screen,
+            // when its log can be read.
+            if (_host.Session?.Describe() is string relog)
+                text.AppendLine($"relog      {relog}");
+            if (_host.Session != null && _host.Session.Screen != ClientScreen.Unknown)
+                text.AppendLine($"client     shows {SessionControl.Describe(_host.Session.Screen)}, by its log");
 
             // A host started while the game was connected: carried on from the one before it, or
             // knowing only what it has seen since - in which case the player has been asked to help.
@@ -573,7 +797,23 @@ namespace AC.Host.Runtime
                 text.AppendLine("session    joined while you were in the world: log out to character select and enter the world again so the host can see your character");
             else if (_host.CarriedOnFrom is DateTimeOffset carriedOn)
                 text.AppendLine($"session    carried on from the host that stopped at {carriedOn.ToLocalTime():HH:mm:ss}");
+
+            // Where the host looked for a session handed over when it started, what it found, and
+            // what became of it: the whole story of a handover that did or did not happen.
+            if (_host.HandoverLookup != null)
+                text.AppendLine($"handover   {_host.HandoverLookup}{(_host.HandoverFate != null ? ": " + _host.HandoverFate : string.Empty)}");
             text.AppendLine($"acting     {(!_host.CanAct ? "impossible (replay)" : _host.ActionsAllowed ? "allowed" : "off")}");
+            text.AppendLine("window     " + WindowLine());
+
+            // AC:Unreal's own plugins, as its settings say: UCM, or another that can play the
+            // character, enabled beside Virindi Tank. Enabled can be seen; running cannot.
+            ClientPluginsState clientPlugins = _host.ClientPlugins ?? ClientPluginsState.Unknown;
+            text.AppendLine("ac plugins " + clientPlugins.Describe()
+                + (clientPlugins.AutomationEnabled
+                    ? $" - {string.Join(" and ", clientPlugins.Automating.Select(p => p.Name))} can play the character: enabled, though whether it is running the client does not say"
+                    : string.Empty));
+            if (_host.ClientPluginBar != null)
+                text.AppendLine($"ui scale   {ClientDisplay.Percent(_host.ClientUiScale)}, the client's Desktop UI Scale; its plugin bar at {_host.ClientPluginBar.Describe()}");
 
             // The answers to the host's own appraisals, kept from a client that would open its
             // examine panel for each - counted, so that working can be seen.
@@ -589,6 +829,34 @@ namespace AC.Host.Runtime
             }
 
             return text.ToString();
+        }
+
+        /// <summary>
+        /// The game window as the overlay last said, whether minimizing parks it, and whether the
+        /// keys held now are going unheeded: one line, for status and for "window".
+        /// </summary>
+        private string WindowLine()
+        {
+            string line = _host.GameWindow.Describe()
+                + "; keep playing while minimized " + (_host.KeepPlayingMinimized ? "on" : "off");
+
+            IReadOnlyCollection<GameKey> held = _host.InputKeys.Held;
+            if (held.Count > 0)
+                line += "; holding " + string.Join(" ", held) + (_host.InputKeys.Unheeded ? ", which the game is not acting on" : string.Empty);
+
+            return line;
+        }
+
+        /// <summary>"window" says what the game window is doing; "window keep on|off" switches parking it in place of minimizing.</summary>
+        private string GameWindow(string rest)
+        {
+            string[] words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 2 && words[0].Equals("keep", StringComparison.OrdinalIgnoreCase) && words[1] is "on" or "off")
+                _host.KeepPlayingMinimized = words[1] == "on";
+            else if (words.Length > 0)
+                return "usage: window [keep on|off]";
+
+            return WindowLine();
         }
 
         /// <summary>Sends one command to a running host's pipe and returns its reply.</summary>

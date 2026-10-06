@@ -45,6 +45,8 @@
 #include "imgui.h"
 #include "imgui_internal.h"  // the settings handler that keeps Decal's bar as the player set it
 
+#include "client_ui.h"
+
 #include "decal_view.h"
 
 namespace overlay {
@@ -204,9 +206,18 @@ struct Arrangement {
     float bar_side_y = -1.0f;
     size_t bar_scroll = 0;
 
+    // Decal's bar put down a side where it starts, 120 down, before the host said where
+    // AC:Unreal's own plugin bar is: placed again once it does, unless slid along since. -1 when not.
+    float bar_side_unplaced_y = -1.0f;
+
     // VVS's bar across the screen rather than down it, as its blue arrow sets: -1 until the
     // player turns it, and then what they chose.
     int vvs_horizontal = -1;
+
+    // VVS's bar came up where VVS starts it - nothing in vvs.s3db, nothing in the ini - before the
+    // host said where AC:Unreal's own plugin bar is: it is moved clear of that once it is known,
+    // unless the player has moved it first.
+    bool vvs_bar_at_start = false;
 
     // A plugin with no entry is open. That is what makes the first frame a full set of
     // windows rather than an empty bar, without anything having to enumerate the plugins
@@ -1337,19 +1348,43 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
     const ImVec2 size = vertical ? ImVec2(thickness, layout.length) : ImVec2(layout.length, thickness);
 
     const char* name = layout.dock == 0 ? "###decalbar" : layout.dock == 1 ? "###decalbar-left" : "###decalbar-right";
+
+    // Along the top, just right of AC:Unreal's own toolbar, which has the corner Decal's bar had
+    // in the retail client; from there where the player drags it.
+    const float start = state.decal_bar.known ? std::max(158.0f, static_cast<float>(state.decal_bar.start)) : 158.0f;
+    const ImVec2 top_start(viewport->WorkPos.x + start, viewport->WorkPos.y + 4.0f);
     if (!vertical)
     {
-        // Along the top, just right of AC:Unreal's own toolbar, which has the corner Decal's
-        // bar had in the retail client; from there where the player drags it.
-        const float start = state.decal_bar.known ? std::max(158.0f, static_cast<float>(state.decal_bar.start)) : 158.0f;
-        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + start, viewport->WorkPos.y + 4.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(top_start, ImGuiCond_FirstUseEver);
     }
     else
     {
-        // Against its edge, where the player slid it along.
+        // Against its edge, where the player slid it along: where Decal's registry has it, or 120
+        // down - below AC:Unreal's own plugin bar instead where the two would overlap, as they do
+        // on the left with the client's bar where it starts (8, 80 at 100%, 62 wide, to about 250).
         const float x = layout.dock == 1 ? viewport->WorkPos.x : viewport->WorkPos.x + viewport->WorkSize.x - thickness;
-        const float y = arrangement.bar_side_y >= 0.0f ? arrangement.bar_side_y
-                        : viewport->WorkPos.y + (state.decal_bar.known ? static_cast<float>(state.decal_bar.start) : 120.0f);
+        if (arrangement.bar_side_unplaced_y >= 0.0f && state.client_ui.known)
+        {
+            if (arrangement.bar_side_y == arrangement.bar_side_unplaced_y)
+                arrangement.bar_side_y = -1.0f;
+            arrangement.bar_side_unplaced_y = -1.0f;
+        }
+
+        float along = state.decal_bar.known ? static_cast<float>(state.decal_bar.start) : 120.0f;
+        if (!state.decal_bar.known && state.client_ui.known)
+        {
+            const float work_top = viewport->WorkPos.y - viewport->Pos.y;
+            const float left = x - viewport->Pos.x;
+            const ClientRect ours{left, work_top + along, left + thickness, work_top + along + layout.length};
+            const ClientRect theirs = ClientUiRect(state.client_ui.plugin_bar, state.client_ui.ui_scale, static_cast<int>(viewport->Size.x),
+                                                   static_cast<int>(viewport->Size.y));
+            along = StartClearOf(ours, theirs, viewport->Size.y) - work_top;
+        }
+
+        const bool starting = arrangement.bar_side_y < 0.0f;
+        const float y = starting ? viewport->WorkPos.y + along : arrangement.bar_side_y;
+        if (starting && !state.decal_bar.known && !state.client_ui.known)
+            arrangement.bar_side_unplaced_y = y;
         ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     }
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
@@ -1367,7 +1402,14 @@ void DrawBar(const State& state, const std::vector<OwnerGroup>& groups, size_t o
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * bar_alpha);
 
     ImVec2 bar_pos = viewport->WorkPos;
-    if (ImGui::Begin(name, nullptr, flags))
+    const bool began = ImGui::Begin(name, nullptr, flags);
+
+    // Along the top, where the ini had it if that is on the display; down a side it is placed
+    // every frame.
+    if (!vertical)
+        PlaceOnDisplayOnce(top_start);
+
+    if (began)
     {
         // Always in front of the windows it opens, as Decal's bar was - but not of a menu,
         // which would open behind it.
@@ -1538,13 +1580,47 @@ void DrawVvsBar(const State& state, const std::vector<OwnerGroup>& groups, Arran
     };
     std::stable_sort(byGroup.begin(), byGroup.end(), [&](const auto& a, const auto& b) { return order(a.second) < order(b.second); });
 
-    // Where VVS put it, (0, 52), or where the player left it in the standard client - its
-    // "VirindiViewService:VVS Bar" row in vvs.s3db - until it is moved here.
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    // Down the side, unless the player turned it here or VVS's ExtraInfo says it was across.
     const VvsBarSettings& stored = state.vvs_bar;
-    ImGui::SetNextWindowPos(stored.has_position ? ImVec2(viewport->Pos.x + static_cast<float>(stored.x), viewport->Pos.y + static_cast<float>(stored.y))
-                                                : ImVec2(viewport->WorkPos.x, viewport->WorkPos.y + 52.0f),
-                            ImGuiCond_FirstUseEver);
+    const bool across = arrangement.vvs_horizontal >= 0 ? arrangement.vvs_horizontal == 1 : stored.has_horizontal && stored.horizontal;
+
+    // Where VVS put it, (0, 52), or where the player left it in the standard client - its
+    // "VirindiViewService:VVS Bar" row in vvs.s3db - until it is moved here. Where VVS put it is
+    // where AC:Unreal's own plugin bar starts, on the same edge (8, 80 at 100%, 62 wide): a bar
+    // that would overlap it starts below it instead - and one that came up before the host said
+    // where that bar is is moved there once it does, if the player has not moved it first.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 vvs_start(viewport->WorkPos.x, viewport->WorkPos.y + 52.0f);
+    ImVec2 first = stored.has_position ? ImVec2(viewport->Pos.x + static_cast<float>(stored.x), viewport->Pos.y + static_cast<float>(stored.y)) : vvs_start;
+    ImGuiCond when = ImGuiCond_FirstUseEver;
+    ImGuiWindow* existing = ImGui::FindWindowByName("###vvsbar");
+    const bool creating = existing == nullptr;
+    if (!stored.has_position && state.client_ui.known && (creating || arrangement.vvs_bar_at_start))
+    {
+        // A theme square, and for each plugin a rule and a square a view: 20 pixels each, 4 a rule.
+        float length = 20.0f;
+        for (const auto& entry : byGroup)
+            length += 4.0f + 20.0f * static_cast<float>(entry.second.size());
+
+        const float left = vvs_start.x - viewport->Pos.x;
+        const float top = vvs_start.y - viewport->Pos.y;
+        const ClientRect ours{left, top, left + (across ? length : 20.0f), top + (across ? 20.0f : length)};
+        const ClientRect theirs = ClientUiRect(state.client_ui.plugin_bar, state.client_ui.ui_scale, static_cast<int>(viewport->Size.x),
+                                               static_cast<int>(viewport->Size.y));
+        const ImVec2 clear(vvs_start.x, viewport->Pos.y + StartClearOf(ours, theirs, viewport->Size.y));
+
+        if (creating)
+        {
+            first = clear;
+        }
+        else if (existing->Pos.x == vvs_start.x && existing->Pos.y == vvs_start.y)
+        {
+            first = clear;
+            when = ImGuiCond_Always;
+        }
+        arrangement.vvs_bar_at_start = false;
+    }
+    ImGui::SetNextWindowPos(first, when);
 
     const ImGuiWindowFlags flags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
@@ -1565,8 +1641,10 @@ void DrawVvsBar(const State& state, const std::vector<OwnerGroup>& groups, Arran
         const ImVec2 was = ImGui::GetWindowPos();
         const bool movable = DecalRevealHeld();
 
-        // Down the side, unless the player turned it here or VVS's ExtraInfo says it was across.
-        const bool across = arrangement.vvs_horizontal >= 0 ? arrangement.vvs_horizontal == 1 : stored.has_horizontal && stored.horizontal;
+        // Come up where VVS starts it - the ini had no place for it - before the host said where
+        // the client's plugin bar is: moved clear of it once it does.
+        if (creating && !stored.has_position && !state.client_ui.known && was.x == vvs_start.x && was.y == vvs_start.y)
+            arrangement.vvs_bar_at_start = true;
 
         // The bar is a hudified VVS window: with left Ctrl held its title strip shows - its
         // coral box, and the blue arrow that turns it between down the side and across.
@@ -1647,11 +1725,13 @@ bool BeginOwnerWindow(const OwnerGroup& group, size_t cascade, float reference_w
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float step = Scaled(32.0f) * static_cast<float>(cascade);
 
-    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + Scaled(48.0f) + step, viewport->WorkPos.y + Scaled(64.0f) + step),
-                            ImGuiCond_FirstUseEver);
+    const ImVec2 start(viewport->WorkPos.x + Scaled(48.0f) + step, viewport->WorkPos.y + Scaled(64.0f) + step);
+    ImGui::SetNextWindowPos(start, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(Scaled(reference_width, kReferenceHeight), ImGuiCond_FirstUseEver);
 
-    return ImGui::Begin(WindowLabel(group).c_str(), &open);
+    const bool shown = ImGui::Begin(WindowLabel(group).c_str(), &open);
+    PlaceOnDisplayOnce(start);
+    return shown;
 }
 
 // The host's window: Decal's furniture rather than any plugin's. The notice and the
@@ -1782,6 +1862,12 @@ std::vector<Command> DrawOverlay(const State& state, bool& visible)
     // cannot see. This hides the bar as well - it is the whole overlay that goes, not one
     // window of it.
     if (!visible)
+        return commands;
+
+    // Nor on a display too small to hold a window - a minimized game's, of no size at all.
+    // Submitted there, a window kept on screen goes to a corner, and ImGui saves it there.
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    if (!DisplayUsable(display.x, display.y))
         return commands;
 
     const int64_t age_ms = SnapshotAgeMs(state);

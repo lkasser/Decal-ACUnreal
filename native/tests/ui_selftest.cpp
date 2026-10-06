@@ -760,6 +760,7 @@ int main()
                 ImGuiWindow* left = ImGui::FindWindowByName("###decalbar-left");
                 CHECK(left != nullptr && left->Active && std::fabs(left->Pos.x - ImGui::GetMainViewport()->WorkPos.x) < 0.5f);
                 CHECK(left != nullptr && left->Size.y > left->Size.x);
+
                 if (const ImRect* next = RectOf(WindowPath("###decalbar-left").Str("dock")))
                     CHECK(ClickAt(plain, next->GetCenter()).empty());
                 ImGuiWindow* right = ImGui::FindWindowByName("###decalbar-right");
@@ -768,6 +769,47 @@ int main()
                     CHECK(ClickAt(plain, next->GetCenter()).empty());
                 CHECK(ImGui::FindWindowByName("###decalbar")->Active);
                 std::printf("   the grey square docks the bar left, right and back along the top\n");
+
+                // Down the left where Decal's registry says nothing: 120 down - or 4 below
+                // AC:Unreal's own plugin bar where the two would meet. At 200% in 1920 by 1080 the
+                // client draws at 175%, its bar where it starts 14,140 to 122.5,514.5, so 518.5 - which
+                // ImGui keeps to the whole pixel, 518. Docked before the host said where that bar is,
+                // it moves once the host does; docked after, it starts there.
+                auto dock_next = [&](const State& s, const char* window) {
+                    Frame(s);
+                    if (const ImRect* square = RectOf(WindowPath(window).Str("dock")))
+                        ClickAt(s, square->GetCenter());
+                    else
+                        CHECK(!"no dock square");
+                };
+                const float work_top = ImGui::GetMainViewport()->WorkPos.y;
+                State unplaced = plain;
+                unplaced.decal_bar.known = false;
+                dock_next(unplaced, "###decalbar");
+                ImGuiWindow* unplaced_left = ImGui::FindWindowByName("###decalbar-left");
+                CHECK(unplaced_left != nullptr && unplaced_left->Active && std::fabs(unplaced_left->Pos.y - (work_top + 120.0f)) < 0.5f);
+                unplaced.client_ui.known = true;
+                unplaced.client_ui.ui_scale = 2.0;
+                Frame(unplaced);
+                Frame(unplaced);
+                CHECK(unplaced_left != nullptr && std::fabs(unplaced_left->Pos.y - (work_top + 518.5f)) <= 0.5f);
+                dock_next(unplaced, "###decalbar-left");
+                dock_next(unplaced, "###decalbar-right");
+                dock_next(unplaced, "###decalbar");
+                CHECK(unplaced_left != nullptr && unplaced_left->Active && std::fabs(unplaced_left->Pos.y - (work_top + 518.5f)) <= 0.5f);
+
+                // Where Decal's registry has a place, there: the client's bar is not reckoned with.
+                State registered = plain;
+                registered.client_ui = unplaced.client_ui;
+                dock_next(registered, "###decalbar-left");
+                dock_next(registered, "###decalbar-right");
+                dock_next(registered, "###decalbar");
+                CHECK(unplaced_left != nullptr && unplaced_left->Active &&
+                      std::fabs(unplaced_left->Pos.y - (work_top + static_cast<float>(plain.decal_bar.start))) < 0.5f);
+                dock_next(plain, "###decalbar-left");
+                dock_next(plain, "###decalbar-right");
+                CHECK(ImGui::FindWindowByName("###decalbar")->Active);
+                std::printf("   down the left, clear of AC:Unreal's plugin bar where Decal's registry has no place for it\n");
             }
             else
             {
@@ -1177,6 +1219,15 @@ int main()
         CHECK(overlay::IsInjectedKey(WM_KEYUP, ours | (static_cast<LPARAM>(3) << 30)));
         CHECK(!overlay::IsInjectedKey(WM_KEYDOWN, 1 | (0x11 << 16)));
         CHECK(!overlay::IsInjectedKey(WM_CHAR, ours));
+
+        // Pressed again after the window changed: every held key, as a fresh press, and nothing
+        // let go first - a release would stop a run for a frame.
+        keys.Apply({'W', 'D'});
+        posted.clear();
+        keys.PressAgain();
+        CHECK(posted == (std::vector<std::string>{"down 87", "down 68"}));
+        CHECK(overlay::DescribeKeys(keys.Held()) == "87,68");
+        keys.ReleaseAll();
         std::printf("15. Held keys: presses, releases and repeats as the host asks\n");
 
         // A hotkey matches its key with exactly its modifiers, and nothing else.
@@ -1194,6 +1245,309 @@ int main()
         CHECK(bar != nullptr && bar->owner == "Decal");
         CHECK(overlay::FindHotkey(hotkeys, VK_F12, true, true, false) == nullptr);
         CHECK(overlay::FindHotkey(hotkeys, VK_F11, true, false, false) == nullptr);
+    }
+
+    // 21. The key pump, which holds keys with no frames at all: a minimized game presents few
+    // or none. Keys are pressed and let go on its passes alone; a host gone quiet still has
+    // everything let go; the held keys are pressed again a moment after the window changes;
+    // and the window's state is logged and told to the host when it changes.
+    {
+        using Lines = std::vector<std::string>;
+        Lines posted;
+        Lines logged;
+        Lines reported;
+        overlay::HeldKeys keys([&](uint16_t key, bool down) {
+            posted.push_back(std::string(down ? "down " : "up ") + std::to_string(key));
+        });
+        overlay::KeyPump pump(
+            keys, [&](const std::string& line) { logged.push_back(line); },
+            [&](const std::string& value) { reported.push_back(value); });
+        auto said = [&](const std::string& part) {
+            return std::count_if(logged.begin(), logged.end(), [&](const std::string& line) {
+                return line.find(part) != std::string::npos;
+            });
+        };
+
+        overlay::GameWindowSeen shown;
+        shown.frames = 100;
+        overlay::GameWindowSeen minimized;
+        minimized.minimized = true;
+        minimized.frames = 100;
+        uint64_t now = 5000;
+
+        // The first pass with a host there presses what it wants and tells it what the window
+        // is doing.
+        pump.Pass({'W'}, 50, true, shown, now);
+        CHECK(posted == Lines{"down 87"});
+        CHECK(reported == Lines{"0,1,0"});
+        CHECK(said("The game window is shown, and presents frames.") == 1);
+
+        // Minimized, and not a frame since: keys are pressed all the same, the host hears the
+        // window is minimized, and the log says keys are held in a minimized game.
+        posted.clear();
+        reported.clear();
+        now += 100;
+        pump.Pass({'W', 'A'}, 10, true, minimized, now);
+        CHECK(posted == Lines{"down 65"});
+        CHECK(reported == Lines{"1,1,0"});
+        CHECK(said("Holding keys 87,65 while the game window is minimized; it still presents frames.") == 1);
+
+        // Two seconds on without a frame it no longer counts as drawing, and the host hears that.
+        reported.clear();
+        now += 2100;
+        pump.Pass({'W', 'A'}, 10, true, minimized, now);
+        CHECK(!pump.Drawing());
+        CHECK(reported == Lines{"1,0,0"});
+        CHECK(said("The game window is minimized, and presents no frames.") == 1);
+
+        // The host goes quiet: everything is let go, though no frame has come to do it.
+        posted.clear();
+        now += 100;
+        pump.Pass({'W', 'A'}, overlay::kHeldKeysStaleMs + 100, true, minimized, now);
+        CHECK(posted == (Lines{"up 87", "up 65"}));
+        CHECK(keys.Held().empty());
+        CHECK(said("Letting go of keys 87,65: the host has not repeated them for over a second.") == 1);
+
+        // Back, and the window changes: what is held is pressed again a moment later - after
+        // the game has had its own go at letting keys go - and only once.
+        posted.clear();
+        now += 100;
+        pump.Pass({'W'}, 10, true, minimized, now);
+        CHECK(posted == Lines{"down 87"});
+        posted.clear();
+        pump.WindowChanged(now);
+        now += 100;
+        pump.Pass({'W'}, 10, true, minimized, now);
+        CHECK(posted.empty());
+        now += overlay::kPressAgainAfterMs;
+        pump.Pass({'W'}, 10, true, minimized, now);
+        CHECK(posted == Lines{"down 87"});
+        CHECK(said("Pressed keys 87 again after the game window changed; it is minimized.") == 1);
+        posted.clear();
+        now += 100;
+        pump.Pass({'W'}, 10, true, minimized, now);
+        CHECK(posted.empty());
+
+        // A change with nothing held presses nothing later.
+        pump.Pass({}, 10, true, minimized, now);
+        posted.clear();
+        pump.WindowChanged(now);
+        now += overlay::kPressAgainAfterMs + 100;
+        pump.Pass({}, 10, true, minimized, now);
+        CHECK(posted.empty());
+
+        // The host goes: keys let go, nothing told to nobody; the next host is told afresh.
+        pump.Pass({'W'}, 10, true, minimized, now);
+        posted.clear();
+        reported.clear();
+        now += 100;
+        pump.Pass({'W'}, 10, false, minimized, now);
+        CHECK(posted == Lines{"up 87"});
+        CHECK(said("Letting go of keys 87: the host is not connected.") == 1);
+        CHECK(reported.empty());
+        now += 100;
+        pump.Pass({}, 10, true, minimized, now);
+        CHECK(reported == Lines{"1,0,0"});
+
+        // Frames again: drawing, and said.
+        reported.clear();
+        overlay::GameWindowSeen back;
+        back.frames = 101;
+        now += 100;
+        pump.Pass({}, 10, true, back, now);
+        CHECK(pump.Drawing());
+        CHECK(reported == Lines{"0,1,0"});
+
+        // Parked in place of minimized is its own state for the host.
+        overlay::GameWindowSeen parked;
+        parked.parked = true;
+        parked.frames = 102;
+        reported.clear();
+        now += 100;
+        pump.Pass({}, 10, true, parked, now);
+        CHECK(reported == Lines{"0,1,1"});
+        CHECK(said("off-screen in place of minimized") == 1);
+        CHECK(overlay::DescribeGameWindow(true, false, true) == "1,0,1");
+
+        // Keys held while minimized are said again every so often, not on every pass: across 25
+        // seconds of passes a tenth of a second apart, at the start and each ten seconds after.
+        Lines quiet;
+        overlay::HeldKeys more([&](uint16_t, bool) {});
+        overlay::KeyPump watched(more, [&](const std::string& line) { quiet.push_back(line); }, [](const std::string&) {});
+        uint64_t at = 100000;
+        for (int pass = 0; pass <= 250; ++pass, at += 100)
+            watched.Pass({'W'}, 10, true, minimized, at);
+        const auto notes = std::count_if(quiet.begin(), quiet.end(), [](const std::string& line) {
+            return line.find("while the game window is minimized") != std::string::npos;
+        });
+        CHECK(notes == 3);
+        CHECK(std::any_of(quiet.begin(), quiet.end(), [](const std::string& line) {
+            return line.find("no frame presented for") != std::string::npos && line.find(", 0 in the last 10.0 s") != std::string::npos;
+        }));
+
+        std::printf("21. Held keys without frames: pressed, let go when the host goes quiet, pressed again after the\n"
+                    "   window changes, and the window's state - minimized, drawing, parked - logged and told to the host\n");
+    }
+
+    // 22. Clicks for the host, as entering the world from AC:Unreal's character select needs: its
+    // 800 by 600 layout found centred in the window, unscaled on a larger one; each point moved
+    // to, pressed and let go a moment apart, the next point after a pause, the pointer put back;
+    // a click repeated by the host made once; and only these messages marked as the overlay's.
+    {
+        // The live window: 1920 by 1080, the layout at 560,240. The Enter button's middle, 344,394
+        // of the layout, is 904,634 of the window - where the live screenshot has it, at two thirds.
+        POINT enter = overlay::PlaceInLayout(1920, 1080, 800, 600, 344, 394);
+        CHECK(enter.x == 904 && enter.y == 634);
+        POINT corner = overlay::PlaceInLayout(800, 600, 800, 600, 0, 0);
+        CHECK(corner.x == 0 && corner.y == 0);
+
+        // Smaller than the layout: shrunk evenly to fit, and centred the other way.
+        POINT small = overlay::PlaceInLayout(640, 600, 800, 600, 400, 300);
+        CHECK(small.x == 320 && small.y == 300);
+        POINT origin = overlay::PlaceInLayout(640, 600, 800, 600, 0, 0);
+        CHECK(origin.x == 0 && origin.y == 60);
+
+        // The client's Desktop UI Scale, as ACUnreal.exe release 96 limits it: the choice, to the
+        // nearest quarter step within 1 to 3, but no more than the largest quarter step at which
+        // 800 by 600 fits the window - the client's own tests: 200% is 200% at 3840 by 2160, 175%
+        // at 1920 by 1080, and 100% at 800 by 600.
+        CHECK(overlay::ClientUiScale(2.0, 3840, 2160) == 2.0);
+        CHECK(overlay::ClientUiScale(2.0, 1920, 1080) == 1.75);
+        CHECK(overlay::ClientUiScale(2.0, 800, 600) == 1.0);
+        CHECK(overlay::ClientUiScale(2.0, 1924, 1083) == 1.75);  // the player's window after the 05:58 resize
+        CHECK(overlay::ClientUiScale(1.0, 1920, 1080) == 1.0);
+        CHECK(overlay::ClientUiScale(1.4, 3840, 2160) == 1.5);
+        CHECK(overlay::ClientUiScale(9.0, 3840, 2160) == 3.0);
+        CHECK(overlay::ClientUiScale(0.25, 1920, 1080) == 1.0);
+        CHECK(overlay::ClientUiScale(std::nan(""), 1920, 1080) == 1.0);
+        CHECK(overlay::ClientUiScale(2.0, 0, 0) == 1.0);
+        CHECK(overlay::ClientUiScale(3.0, 640, 480) == 1.0);
+
+        // At 175% the layout is 1400 by 1050, centred in 1920 by 1080 at 260,15: Enter's middle at
+        // 862,705 (704.5 rounded on), the first row's at 474,400.
+        POINT enter_scaled = overlay::PlaceInLayout(1920, 1080, 800, 600, 344, 394, 2.0);
+        CHECK(enter_scaled.x == 862 && enter_scaled.y == 705);
+        POINT row_scaled = overlay::PlaceInLayout(1920, 1080, 800, 600, 122, 220, 1.75);
+        CHECK(row_scaled.x == 474 && row_scaled.y == 400);
+        POINT corner_scaled = overlay::PlaceInLayout(3840, 2160, 800, 600, 0, 0, 2.0);
+        CHECK(corner_scaled.x == 1120 && corner_scaled.y == 480);
+        // A scale the window cannot take is the layout's own size, as before there was one.
+        POINT unscaled = overlay::PlaceInLayout(800, 600, 800, 600, 344, 394, 3.0);
+        CHECK(unscaled.x == 344 && unscaled.y == 394);
+
+        // The client's plugin bar where it starts, 8,80, 62 wide and taken as 214 high in its
+        // units, in pixels: at 100%, and at 200% in 1920 by 1080, which the client draws at 175%.
+        const float plugin_bar[4] = {8.0f, 80.0f, 62.0f, 214.0f};
+        const overlay::ClientRect at_100 = overlay::ClientUiRect(plugin_bar, 1.0, 1920, 1080);
+        CHECK(at_100.left == 8.0f && at_100.top == 80.0f && at_100.right == 70.0f && at_100.bottom == 294.0f);
+        const overlay::ClientRect at_175 = overlay::ClientUiRect(plugin_bar, 2.0, 1920, 1080);
+        CHECK(at_175.left == 14.0f && at_175.top == 140.0f && at_175.right == 122.5f && at_175.bottom == 514.5f);
+
+        // VVS's bar where VVS starts it, (0, 52), 20 wide: clear of the plugin bar with only its
+        // theme square; with a plugin's square it would overlap, and starts 4 below it instead -
+        // unless that would run it off the bottom. Decal's bar along the top never meets it.
+        CHECK(overlay::StartClearOf({0.0f, 52.0f, 20.0f, 72.0f}, at_100, 1080.0f) == 52.0f);
+        CHECK(overlay::StartClearOf({0.0f, 52.0f, 20.0f, 96.0f}, at_100, 1080.0f) == 298.0f);
+        CHECK(overlay::StartClearOf({0.0f, 52.0f, 20.0f, 96.0f}, at_175, 1080.0f) == 52.0f);
+        CHECK(overlay::StartClearOf({0.0f, 52.0f, 20.0f, 160.0f}, at_175, 1080.0f) == 518.5f);
+        CHECK(overlay::StartClearOf({0.0f, 52.0f, 20.0f, 1000.0f}, at_100, 1080.0f) == 52.0f);
+        CHECK(overlay::StartClearOf({158.0f, 4.0f, 272.0f, 27.0f}, at_100, 1080.0f) == 4.0f);
+
+        using Lines = std::vector<std::string>;
+        Lines posted;
+        Lines logged;
+        overlay::Clicker clicker(
+            [&](overlay::MouseStep step, const overlay::Click& click, const overlay::Click::Point& point) {
+                const char* what = step == overlay::MouseStep::Move   ? "move"
+                                   : step == overlay::MouseStep::Down ? "down"
+                                   : step == overlay::MouseStep::Up   ? "up"
+                                                                      : "restore";
+                posted.push_back(std::string(what) + (step == overlay::MouseStep::Restore ? std::string()
+                                                                                           : " " + std::to_string(point.x) + "," + std::to_string(point.y)) +
+                                 " of " + std::to_string(click.layout_width) + "x" + std::to_string(click.layout_height));
+            },
+            [&](const std::string& line) { logged.push_back(line); });
+
+        overlay::Click click;
+        click.id = 1759700000123;
+        click.layout_width = 800;
+        click.layout_height = 600;
+        click.points = {{122, 220}, {344, 394}};
+
+        // A click at the client's UI scale says so.
+        {
+            overlay::Clicker scaled([](overlay::MouseStep, const overlay::Click&, const overlay::Click::Point&) {},
+                                    [&](const std::string& line) { logged.push_back(line); });
+            overlay::Click at_scale = click;
+            at_scale.id = 1759700000001;
+            at_scale.ui_scale = 1.75;
+            scaled.Begin(at_scale, 0);
+            CHECK(logged.size() == 1 && logged[0].find("800 by 600, at the client's UI scale of 175%.") != std::string::npos);
+            logged.clear();
+        }
+
+        uint64_t now = 1000;
+        CHECK(clicker.NextDueIn(now) == UINT64_MAX);
+        clicker.Begin(click, now);
+        CHECK(clicker.Busy());
+        CHECK(logged.size() == 1 && logged[0].find("122,220, then 344,394 of the layout centred in it, 800 by 600.") != std::string::npos);
+
+        clicker.Pass(now);
+        CHECK(posted == Lines{"move 122,220 of 800x600"});
+        CHECK(clicker.NextDueIn(now) == overlay::kClickSettleMs);
+
+        now += overlay::kClickSettleMs;
+        clicker.Pass(now);
+        CHECK(posted.back() == "down 122,220 of 800x600");
+        now += overlay::kClickHoldMs;
+        clicker.Pass(now);
+        CHECK(posted.back() == "up 122,220 of 800x600");
+
+        // The next point only after a pause: never a double click.
+        posted.clear();
+        now += overlay::kClickBetweenMs - 1;
+        clicker.Pass(now);
+        CHECK(posted.empty());
+        now += 1;
+        clicker.Pass(now);
+        CHECK(posted == Lines{"move 344,394 of 800x600"});
+
+        // A late pass makes everything due at once, in order.
+        now += 10000;
+        clicker.Pass(now);
+        CHECK(posted == (Lines{"move 344,394 of 800x600", "down 344,394 of 800x600", "up 344,394 of 800x600", "restore of 800x600"}));
+        CHECK(!clicker.Busy());
+        CHECK(clicker.NextDueIn(now) == UINT64_MAX);
+
+        // The host repeats a click for a moment: the same id is not clicked again.
+        posted.clear();
+        clicker.Begin(click, now);
+        clicker.Pass(now + 10000);
+        CHECK(posted.empty());
+
+        // A new one cuts short one under way, letting go of the button it pressed.
+        overlay::Click next = click;
+        next.id += 1;
+        next.points = {{344, 394}};
+        clicker.Begin(next, now);
+        clicker.Pass(now + overlay::kClickSettleMs);
+        posted.clear();
+        overlay::Click third = next;
+        third.id += 1;
+        clicker.Begin(third, now + overlay::kClickSettleMs + 10);
+        CHECK(posted == Lines{"up 344,394 of 800x600"});
+
+        // Only messages this posted are marked as its own, and only mouse ones.
+        CHECK(overlay::IsInjectedMouse(WM_LBUTTONDOWN, MK_LBUTTON | overlay::kInjectedMouseMarker));
+        CHECK(overlay::IsInjectedMouse(WM_MOUSEMOVE, overlay::kInjectedMouseMarker));
+        CHECK(overlay::IsInjectedMouse(WM_LBUTTONUP, overlay::kInjectedMouseMarker));
+        CHECK(!overlay::IsInjectedMouse(WM_LBUTTONDOWN, MK_LBUTTON));
+        CHECK(!overlay::IsInjectedMouse(WM_RBUTTONDOWN, overlay::kInjectedMouseMarker));
+        CHECK(!overlay::IsInjectedMouse(WM_KEYDOWN, overlay::kInjectedMouseMarker));
+        CHECK(((MK_LBUTTON | overlay::kInjectedMouseMarker) & ~overlay::kInjectedMouseMask) == MK_LBUTTON);
+
+        std::printf("22. Clicks for the host: the character select's layout found in the window, each point pressed\n"
+                    "   and let go a moment apart, the pointer put back, a repeated click made once\n");
     }
 
     // 16. Two bars, as the standard client has them: a VVS view's switch is on Virindi View
@@ -1225,6 +1579,22 @@ int main()
 
         Frame(two);
         Frame(two);
+
+        // VVS's bar came up where VVS starts it, (0, 52), with no place for it in vvs.s3db or the
+        // ini - and before the host said where AC:Unreal's own plugin bar is, which starts on the
+        // same edge (8, 80 at 100%, 62 wide, taken as 214 high) and would be under the Tank's square.
+        // Once the host says, it moves 4 below that bar, once; a later change of the client's scale
+        // moves it no more, and nor would anything once the player has placed it.
+        {
+            ImGuiWindow* vvs_column = ImGui::FindWindowByName("###vvsbar");
+            CHECK(vvs_column != nullptr && vvs_column->Pos.x == 0.0f && vvs_column->Pos.y == 52.0f);
+            two.client_ui.known = true;
+            Frame(two);
+            CHECK(vvs_column != nullptr && std::fabs(vvs_column->Pos.y - 298.0f) < 0.5f);
+            two.client_ui.ui_scale = 2.0;
+            Frame(two);
+            CHECK(vvs_column != nullptr && std::fabs(vvs_column->Pos.y - 298.0f) < 0.5f && vvs_column->Pos.x == 0.0f);
+        }
 
         CHECK(VvsSwitch("Tank") != nullptr);
         CHECK(BarSwitch("Tank") == nullptr);
@@ -2373,6 +2743,158 @@ int main()
         std::printf("19. pictures cut from their art and labels in a face of their own, clicked and with tooltips;\n");
         std::printf("   a console's link clicked; the cursor put in an edit box and Enter sent; a window resized by its\n");
         std::printf("   frame from vvs.s3db's size, within its least; a hudified window stuck where vvs.s3db left it\n");
+    }
+
+    // 23. A minimized game. Its window is 0 x 0, and Unreal's back buffers 8 x 8: no window may
+    // move on such a display, nor be saved where it would put one - a hudified window kept on a
+    // screen of no size goes to its top left corner, which is where three of Virindi Tank's HUDs
+    // were saved on 2026-10-05, at -5,-20. A long minimize draws everything on the first frame
+    // back. And a window the ini has off the display, or in that corner stuck to neither edge,
+    // starts where the host says instead; one the player put anywhere on it stays.
+    {
+        // As Virindi Tank's HUDs are: hudified, in VVS's Float theme, 197 x 166 with the frame and
+        // title bar that are not drawn, where the host says Virindi HUDs left them.
+        auto hud = [](const char* owner, int x, int y, bool ghosted = true) {
+            PluginWindow window;
+            window.owner = owner;
+            window.has_view = true;
+            window.view.title = owner;
+            window.view.bar = "vvs";
+            window.view.theme = "Float";
+            window.view.ghosted = ghosted;
+            window.view.resizeable = false;
+            window.view.show_in_bar = false;
+            window.view.minimizable = false;
+            window.view.width = 187;
+            window.view.height = 137;
+            window.view.has_position = true;
+            window.view.x = x;
+            window.view.y = y;
+            window.view.root.type = overlay::ViewControlType::Fixed;
+            return window;
+        };
+        auto at = [](const char* identity) {
+            ImGuiWindow* window = ImGui::FindWindowByName(identity);
+            return window != nullptr ? window->Pos : ImVec2(-9999.0f, -9999.0f);
+        };
+        auto is = [](ImVec2 pos, float x, float y) { return std::fabs(pos.x - x) < 0.5f && std::fabs(pos.y - y) < 0.5f; };
+        auto ini_pos = [](const char* name) {
+            const std::string ini = ImGui::SaveIniSettingsToMemory();
+            const size_t section = ini.find(std::string("[Window][") + name + "]");
+            if (section == std::string::npos) return std::string();
+            const size_t pos = ini.find("Pos=", section);
+            return pos == std::string::npos ? std::string() : ini.substr(pos, ini.find('\n', pos) - pos);
+        };
+
+        State huds;
+        huds.revision = 40;
+        huds.published_ms = NowMs();
+        huds.windows = {hud("VT/status", 275, 250), hud("VT/comps", 425, 97), hud("VT/miniremote", 282, 100)};
+
+        overlay::SetDecalReveal(false);
+        io.AddMousePosEvent(1900.0f, 1060.0f);
+        Frame(huds);
+        Frame(huds);
+        CHECK(is(at("###decal:VT/status"), 275, 250));
+        CHECK(is(at("###decal:VT/comps"), 425, 97));
+        CHECK(is(at("###decal:VT/miniremote"), 282, 100));
+        CHECK(ini_pos("decal:VT/status") == "Pos=275,250");
+
+        // Minimized: nothing submitted, nothing moved, nothing marked to be saved - at 0 x 0, at
+        // the 8 x 8 of Unreal's back buffers, with one side gone, and just under the least.
+        GImGui->SettingsDirtyTimer = 0.0f;
+        for (const ImVec2 display : {ImVec2(0.0f, 0.0f), ImVec2(8.0f, 8.0f), ImVec2(0.0f, 1080.0f), ImVec2(1920.0f, 0.0f), ImVec2(99.0f, 99.0f)})
+        {
+            io.DisplaySize = display;
+            CHECK(Frame(huds).empty());
+            CHECK(ImGui::GetDrawData()->TotalVtxCount == 0);
+            CHECK(is(at("###decal:VT/status"), 275, 250));
+            CHECK(is(at("###decal:VT/comps"), 425, 97));
+            CHECK(is(at("###decal:VT/miniremote"), 282, 100));
+        }
+        CHECK(GImGui->SettingsDirtyTimer <= 0.0f);
+        CHECK(!overlay::DisplayUsable(99.0f, 1080.0f) && overlay::DisplayUsable(100.0f, 100.0f));
+
+        // Restored, 43 minutes later: the first frame back draws all it drew before, where it was.
+        io.DisplaySize = ImVec2(1920.0f, 1080.0f);
+        Frame(huds);
+        const int drawn = ImGui::GetDrawData()->TotalVtxCount;
+        CHECK(drawn > 0);
+        io.DeltaTime = 43.0f * 60.0f;
+        g_items.clear();
+        g_rects.clear();
+        ImGui::NewFrame();
+        bool shown = true;
+        CHECK(overlay::DrawOverlay(huds, shown).empty());
+        ImGui::Render();
+        FakeUploads();
+        CHECK(ImGui::GetDrawData()->TotalVtxCount == drawn);
+        Frame(huds);
+        CHECK(ImGui::GetDrawData()->TotalVtxCount == drawn);
+        CHECK(is(at("###decal:VT/status"), 275, 250));
+        CHECK(ini_pos("decal:VT/status") == "Pos=275,250");
+        CHECK(ini_pos("decal:VT/comps") == "Pos=425,97");
+        CHECK(ini_pos("decal:VT/miniremote") == "Pos=282,100");
+        std::printf("23. minimized - at 0 x 0, 8 x 8 or under 100 - nothing drawn, moved or marked to save; back, all of it drawn\n");
+
+        // The ini as that minimize left it, and other places a window may have been saved. Float's
+        // frame is 5 pixels and its title bar 19, so a hudified window's top left corner on a
+        // screen of no size is -5,-20.
+        ImGui::LoadIniSettingsFromMemory(
+            "[Window][decal:Lost/corner]\nPos=-5,-20\nSize=197,166\n\n[VVSView][Lost/corner]\nStuck=\n\n"
+            "[Window][decal:Kept/corner]\nPos=-5,-20\nSize=197,166\n\n[VVSView][Kept/corner]\nStuck=LT\n\n"
+            "[Window][decal:Lost/away]\nPos=2500,1300\nSize=197,166\n\n"
+            "[Window][decal:Lost/offtop]\nPos=600,-200\nSize=197,166\n\n"
+            "[Window][decal:Kept/top]\nPos=600,-10\nSize=197,166\n\n"
+            "[Window][decal:Kept/plain]\nPos=700,500\nSize=197,166\n\n"
+            "[Window][decal:Lost/plain]\nPos=1800,1000\nSize=197,166\n\n"
+            "[Window][window:Lost/owner]\nPos=5000,5000\nSize=400,300\n\n");
+
+        State saved;
+        saved.revision = 41;
+        saved.published_ms = NowMs();
+        saved.windows = {hud("Lost/corner", 300, 300), hud("Kept/corner", 300, 500), hud("Lost/away", 320, 320),
+                         hud("Lost/offtop", 330, 330), hud("Kept/top", 340, 340), hud("Kept/plain", 360, 360, false),
+                         hud("Lost/plain", 380, 380, false)};
+        PluginWindow owner;
+        owner.owner = "Lost/owner";
+        saved.windows.push_back(owner);
+        Panel note;
+        note.owner = "Lost/owner";
+        note.title = "Note";
+        saved.panels.push_back(note);
+
+        Frame(saved);
+        Frame(saved);
+
+        // In the corner a minimize left it, stuck to neither edge: where Virindi HUDs left it.
+        CHECK(is(at("###decal:Lost/corner"), 300, 300));
+        // Pushed into the corner by the player, and so stuck to both edges: kept.
+        CHECK(is(at("###decal:Kept/corner"), -5, -20));
+        // Off the display: where the host says.
+        CHECK(is(at("###decal:Lost/away"), 320, 320));
+        CHECK(is(at("###decal:Lost/offtop"), 330, 330));
+        // Its title bar, which is not drawn, above the screen, its body on it: kept.
+        CHECK(is(at("###decal:Kept/top"), 600, -10));
+        // A window that is not hudified, all of it on the display: kept; partly off it: back.
+        CHECK(is(at("###decal:Kept/plain"), 700, 500));
+        CHECK(is(at("###decal:Lost/plain"), 380, 380));
+        // A plugin's window with no view of its own, off the display: back where it starts.
+        {
+            ImGuiWindow* window = ImGui::FindWindowByName("###window:Lost/owner");
+            CHECK(window != nullptr);
+            if (window != nullptr)
+                CHECK(window->Pos.x >= 0.0f && window->Pos.y >= 0.0f && window->Pos.x + window->Size.x <= 1920.0f &&
+                      window->Pos.y + window->Size.y <= 1080.0f);
+        }
+        CHECK(ini_pos("decal:Lost/corner") == "Pos=300,300");
+
+        // Once a session: moved by the player afterwards - here, put back in the corner - it stays.
+        ImGui::SetWindowPos("###decal:Lost/away", ImVec2(1500.0f, 900.0f));
+        Frame(saved);
+        Frame(saved);
+        CHECK(is(at("###decal:Lost/away"), 1500, 900));
+        std::printf("   saved off the display, or in a minimize's corner unstuck: back where the host says; anywhere on it: kept\n");
     }
 
     ImGui::DestroyContext();

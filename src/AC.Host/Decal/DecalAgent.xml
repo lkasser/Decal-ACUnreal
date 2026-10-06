@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<view title="Decal" width="420" height="232">
+<view title="Decal" width="420" height="256">
 	<control progid="DecalControls.Notebook" name="tabs">
 		<page label="Plugins">
 			<control progid="DecalControls.FixedLayout" clipped="">
@@ -45,6 +45,8 @@
 				<control progid="DecalControls.Edit" name="txtKeyTurnRight" left="250" top="180" width="36" height="16" imageportalsrc="4726" text=""/>
 				<control progid="DecalControls.PushButton" name="btnTestWalk" left="300" top="176" width="110" height="22" text="Test Walk"/>
 				<control progid="DecalControls.StaticText" name="lblTestWalk" left="148" top="162" width="264" height="16" text=""/>
+				<control progid="DecalControls.Checkbox" name="chkKeepPlaying" left="8" top="204" width="404" height="20" text="Keep playing while the game is minimized"/>
+				<control progid="DecalControls.StaticText" name="lblKeepPlayingHelp" left="26" top="222" width="386" height="16" text="Minimizing then parks it off-screen at 30 frames a second, so it can still walk."/>
 			</control>
 		</page>
 		<page label="Hotkeys">

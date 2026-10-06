@@ -96,6 +96,17 @@ namespace AC.Host.Tests
             Assert.Equal("7D020000" + "800D0080" + "02000000" + "00710080" + "01710080", AfterSequence(Assert.Single(transport.Sent)));
         }
 
+        /// <summary>ACE's GameActionGiveObjectRequest reads the target, the item, then the amount.</summary>
+        [Fact]
+        public async Task AGiftIsTheTargetTheItemAndTheAmount()
+        {
+            RecordingTransport transport = new RecordingTransport();
+
+            Assert.True(await new ClientActions(transport, new ListLog(), new WorldState()).GiveAsync(0x800111CE, 0x7A1C3B00, 3));
+
+            Assert.Equal("CD000000" + "003B1C7A" + "CE110180" + "03000000", AfterSequence(Assert.Single(transport.Sent)));
+        }
+
         [Fact]
         public async Task WithoutATransportThatCanSendNoMergeIsComposed()
         {

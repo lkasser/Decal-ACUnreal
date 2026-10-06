@@ -4,13 +4,17 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 
 #include "imgui_internal.h"  // the settings handler that keeps each window's theme and pin in the ini
+#include "log.h"
+#include "overlay_ui.h"
 #include "textures.h"
 
 namespace overlay {
@@ -2367,6 +2371,11 @@ ImVec2 KeepOnScreen(WindowMemory& memory, ImVec2 at, ImVec2 size, float border, 
     // As VVS's HudView kept a hudified view: its body no further left than the screen's edge,
     // and no higher than four pixels from its top.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    // Not on a screen too small to hold a window - a minimized game's, of no size at all - where
+    // every hudified window would go to the top left corner, and be saved there.
+    if (!DisplayUsable(viewport->WorkSize.x, viewport->WorkSize.y)) return at;
+
     const ImVec2 lo(viewport->WorkPos.x - border, viewport->WorkPos.y + kGhostTop - border - head);
     const ImVec2 hi(viewport->WorkPos.x + viewport->WorkSize.x - size.x + border,
                     viewport->WorkPos.y + viewport->WorkSize.y - size.y + border);
@@ -2710,6 +2719,8 @@ void DrawDecalWindow(const PluginWindow& window, size_t cascade, bool& open, std
     const float width = (static_cast<float>(std::max(view_width, 40)) + border * 2.0f) * s;
     const float height = (static_cast<float>(std::max(view_height, 20)) + head + border * 2.0f) * s;
 
+    // Where it starts: where the host says it was left - vvs.s3db, or Virindi HUDs' own
+    // settings for a HUD - else a step down and right from the last window opened.
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float step = 32.0f * s * static_cast<float>(cascade);
     const ImVec2 first = view.has_position
@@ -2733,7 +2744,27 @@ void DrawDecalWindow(const PluginWindow& window, size_t cascade, bool& open, std
     if (click_through && !g_reveal) flags |= ImGuiWindowFlags_NoInputs;
 
     std::string label = "###decal:" + window.owner;
-    if (ImGui::Begin(label.c_str(), nullptr, flags)) {
+    const bool began = ImGui::Begin(label.c_str(), nullptr, flags);
+
+    // Where the ini had it, looked at once: on the display, or back where it starts. A hudified
+    // window's frame and title bar are not drawn, and may lie off the screen as KeepOnScreen
+    // lets them. But a screen of no size - a minimized game's - put every hudified window at its
+    // top left corner, stuck to neither edge, and that is where the ini had them; a window the
+    // player pushes into the corner is stuck to both.
+    {
+        const float e = border * s;
+        const float h = head * s;
+        bool cornered = false;
+        if (ghosted) {
+            const ImVec2 at = ImGui::GetWindowPos();
+            const bool left = std::fabs(at.x - (viewport->WorkPos.x - e)) < 0.5f;
+            const bool top = std::fabs(at.y - (viewport->WorkPos.y + kGhostTop - e - h)) < 0.5f;
+            cornered = left && top && memory.stuck.find('L') == std::string::npos && memory.stuck.find('T') == std::string::npos;
+        }
+        const ImVec4 overhang = ghosted ? ImVec4(e, std::max(0.0f, e + h - kGhostTop), e, e) : ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+        PlaceOnDisplayOnce(first, overhang, cornered);
+    }
+    if (began) {
         ImDrawList* draw = ImGui::GetWindowDrawList();
         ImVec2 wa = ImGui::GetWindowPos();
         if (ghosted)
@@ -2946,6 +2977,40 @@ DecalWindowLook DescribeDecalWindow(const std::string& owner, const View& view) 
 }
 
 void SetDecalViewAlpha(int alpha) { g_view_alpha = std::clamp(alpha, 0, kAlphaMax); }
+
+bool PlaceOnDisplayOnce(ImVec2 start, ImVec4 overhang, bool misplaced) {
+    // Once a session for each window: after that, wherever it is is where the player put it.
+    static std::set<ImGuiID> looked;
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window == nullptr || !looked.insert(window->ID).second) return false;
+
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 lo = viewport->WorkPos;
+    const ImVec2 hi(viewport->WorkPos.x + viewport->WorkSize.x, viewport->WorkPos.y + viewport->WorkSize.y);
+    const ImVec2 at = window->Pos;
+    const ImVec2 size = window->Size;
+
+    // Half a pixel either way, for positions ImGui keeps truncated.
+    constexpr float slack = 0.5f;
+    const bool off = at.x < lo.x - overhang.x - slack || at.y < lo.y - overhang.y - slack ||
+                     at.x + size.x > hi.x + overhang.z + slack || at.y + size.y > hi.y + overhang.w + slack;
+    if (!off && !misplaced) return false;
+    if (std::fabs(at.x - start.x) < slack && std::fabs(at.y - start.y) < slack) return false;
+
+    ImGui::SetWindowPos(window, start);
+
+    // The name without ImGui's "###", as the ini spells it.
+    const char* name = window->Name;
+    if (const char* hashes = std::strstr(name, "###")) name = hashes + 3;
+    if (off)
+        LogFormat("Put %s back where it starts, %.0f,%.0f: the ini had it at %.0f,%.0f (%.0fx%.0f), not on the %.0fx%.0f display.", name,
+                  start.x, start.y, at.x, at.y, size.x, size.y, viewport->WorkSize.x, viewport->WorkSize.y);
+    else
+        LogFormat("Put %s back where it starts, %.0f,%.0f: the ini had it at %.0f,%.0f, the corner a minimized game leaves a hudified "
+                  "window in, and it is stuck to neither edge.",
+                  name, start.x, start.y, at.x, at.y);
+    return true;
+}
 
 void KeepVvsBarOnScreen(bool moved, const std::string* stored) {
     WindowMemory& memory = Memory()[kVvsBarOwner];

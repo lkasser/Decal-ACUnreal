@@ -208,6 +208,221 @@ namespace AC.Host.Tests
             Assert.Equal('D', input.VirtualKey(GameKey.TurnRight));
         }
 
+        // ------------------------------------------------------------------- keys the game does not take
+
+        /// <summary>Keys watched for the client's answer, as the host wires them: a report count and a window.</summary>
+        private static (GameInput Input, ListLog Log, Func<long> Bump) WatchedInput(GameWindowState window = null)
+        {
+            long reports = 0;
+            ListLog log = new ListLog();
+            GameInput input = new GameInput(log)
+            {
+                Publish = _ => { },
+                Attached = () => true,
+                ClientReports = () => reports,
+                Window = () => window ?? GameWindowState.Unknown,
+            };
+            return (input, log, () => ++reports);
+        }
+
+        private static void Ticks(GameInput input, double seconds)
+        {
+            for (double t = 0; t < seconds - 1e-9; t += 0.1)
+                input.Tick(TimeSpan.FromMilliseconds(100));
+        }
+
+        [Fact]
+        public void KeysTheClientAnswersAreNeverUnheeded()
+        {
+            (GameInput input, ListLog log, Func<long> report) = WatchedInput();
+
+            input.Hold(GameKey.Forward, true);
+            Ticks(input, 0.1);
+            report();
+            Ticks(input, 10);
+
+            Assert.False(input.Unheeded);
+            Assert.DoesNotContain(log.Lines, l => l.Contains("not acting on them"));
+        }
+
+        /// <summary>
+        /// Held three seconds with not a word from the client: unheeded, said once with the window's
+        /// state - minimized - and said again when the client answers.
+        /// </summary>
+        [Fact]
+        public void KeysTheClientNeverAnswersAreUnheededAfterThreeSecondsAndSaidWithTheWindow()
+        {
+            GameWindowState minimized = new GameWindowState(known: true, minimized: true, drawing: false, parked: false);
+            (GameInput input, ListLog log, Func<long> report) = WatchedInput(minimized);
+
+            input.Hold(GameKey.Forward, true);
+            Ticks(input, 2.9);
+            Assert.False(input.Unheeded);
+
+            Ticks(input, 0.2);
+            Assert.True(input.Unheeded);
+            Ticks(input, 5);
+            string said = Assert.Single(log.Lines, l => l.Contains("not acting on them"));
+            Assert.StartsWith("WARN Movement keys W held 3 s", said);
+            Assert.Contains("minimized, no frames", said);
+            Assert.Contains("not taking keys while it is minimized", said);
+
+            report();
+            Ticks(input, 0.1);
+            Assert.False(input.Unheeded);
+            Assert.Contains(log.Lines, l => l.Contains("acting on the movement keys again"));
+        }
+
+        /// <summary>
+        /// The wait runs from the first change the client has not answered, so keys that keep
+        /// changing - a mover's turns - cannot put the question off for ever.
+        /// </summary>
+        [Fact]
+        public void KeysThatKeepChangingAreStillFoundUnheeded()
+        {
+            (GameInput input, _, _) = WatchedInput();
+
+            input.Hold(GameKey.Forward, true);
+            for (int i = 0; i < 4; i++)
+            {
+                input.Hold(GameKey.TurnLeft, i % 2 == 0);
+                Ticks(input, 1);
+            }
+
+            Assert.True(input.Unheeded);
+        }
+
+        /// <summary>Letting go of every movement key ends it at once; jump and walk alone are never watched.</summary>
+        [Fact]
+        public void LettingGoEndsItAndJumpOrWalkAloneIsNotWatched()
+        {
+            (GameInput input, _, _) = WatchedInput();
+
+            input.Hold(GameKey.Forward, true);
+            Ticks(input, 3.5);
+            Assert.True(input.Unheeded);
+
+            input.ReleaseAll();
+            Assert.False(input.Unheeded);
+
+            input.Hold(GameKey.Jump, true);
+            input.Hold(GameKey.Walk, true);
+            Ticks(input, 5);
+            Assert.False(input.Unheeded);
+        }
+
+        /// <summary>Without the client's report count, as with no host wiring it, nothing is ever unheeded.</summary>
+        [Fact]
+        public void WithoutReportsToWatchNothingIsUnheeded()
+        {
+            (GameInput input, _) = NewInput();
+            input.Hold(GameKey.Forward, true);
+            for (int i = 0; i < 50; i++)
+                input.Tick(TimeSpan.FromMilliseconds(100));
+
+            Assert.False(input.Unheeded);
+        }
+
+        [Theory]
+        [InlineData("1,0,0", true, true, false, false)]
+        [InlineData("0,1,0", true, false, true, false)]
+        [InlineData("0,1,1", true, false, true, true)]
+        [InlineData(" 1 , 1 , 0 ", true, true, true, false)]
+        public void TheOverlaysWordOnTheWindowIsRead(string value, bool known, bool minimized, bool drawing, bool parked)
+        {
+            Assert.True(GameWindowState.TryParse(value, out GameWindowState state));
+            Assert.Equal(new GameWindowState(known, minimized, drawing, parked), state);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("1,0")]
+        [InlineData("yes,no,maybe")]
+        [InlineData("2,0,0")]
+        public void AnythingElseIsNotAWindowState(string value)
+        {
+            Assert.False(GameWindowState.TryParse(value, out GameWindowState state));
+            Assert.Same(GameWindowState.Unknown, state);
+        }
+
+        [Fact]
+        public void AWindowStateDescribesItself()
+        {
+            Assert.Equal("not known (no overlay)", GameWindowState.Unknown.Describe());
+            Assert.Equal("minimized, no frames", new GameWindowState(true, true, false, false).Describe());
+            Assert.Equal("shown, drawing", new GameWindowState(true, false, true, false).Describe());
+            Assert.Equal("parked off-screen in place of minimized, drawing", new GameWindowState(true, false, true, true).Describe());
+            Assert.True(new GameWindowState(true, false, true, true).PutAway);
+        }
+
+        /// <summary>The host keeps what the overlay says of the window, and says it once each time it changes.</summary>
+        [Fact]
+        public async Task TheHostKeepsAndSaysWhatTheGameWindowIsDoing()
+        {
+            ListLog log = new ListLog();
+            await using GameHost host = new GameHost(new LiveTransport(), log, dataRoot: NewRoot());
+            Assert.False(((IHost)host).GameWindow.Known);
+
+            GameWindowState minimized = new GameWindowState(true, true, false, false);
+            host.NoteGameWindow(minimized);
+            host.NoteGameWindow(new GameWindowState(true, true, false, false));
+            Assert.Equal(minimized, ((IHost)host).GameWindow);
+            Assert.Single(log.Lines, l => l.Contains("The game window is minimized, no frames."));
+            Assert.Contains(log.Lines, l => l.Contains("\"Keep playing while minimized\" parks it off-screen instead"));
+
+            host.NoteGameWindow(GameWindowState.Unknown);
+            Assert.Contains(log.Lines, l => l.Contains("no longer says what the game window is doing"));
+        }
+
+        /// <summary>Keeping on while minimized starts as the command line says, and is said when it changes.</summary>
+        [Fact]
+        public async Task KeepingOnWhileMinimizedStartsAsTheSettingsSay()
+        {
+            await using GameHost off = new GameHost(new LiveTransport(), new ListLog(), dataRoot: NewRoot());
+            Assert.False(off.KeepPlayingMinimized);
+
+            ListLog log = new ListLog();
+            await using GameHost on = new GameHost(new LiveTransport(), log, new Dictionary<string, string> { ["Overlay:KeepPlayingMinimized"] = "on" }, dataRoot: NewRoot());
+            Assert.True(on.KeepPlayingMinimized);
+
+            bool? heard = null;
+            on.KeepPlayingMinimizedChanged += (_, value) => heard = value;
+            on.KeepPlayingMinimized = false;
+            Assert.False(heard);
+            Assert.Contains(log.Lines, l => l.Contains("Keep playing while minimized is off"));
+        }
+
+        /// <summary>Decal's Options page switches keeping on while minimized, and the next session remembers it.</summary>
+        [Fact]
+        public async Task TheKeepPlayingSwitchInTheWindowIsUsedAndRemembered()
+        {
+            string root = NewRoot();
+            GameHost host = new GameHost(new LiveTransport(), new ListLog(), dataRoot: root);
+            DecalAgent agent = new DecalAgent(host, null);
+            host.AddPlugin(agent);
+            await host.StartAsync();
+
+            DecalView view = await OnGameThread(host, () => agent.View);
+            Assert.True(view.TryGet("chkKeepPlaying", out Checkbox keep));
+            Assert.False(keep.Checked);
+
+            host.DispatchCommand(DecalAgent.PluginName, new OverlayCommand("set", "true", controlId: "chkKeepPlaying"));
+            await OnGameThread(host, () => true);
+            Assert.True(host.KeepPlayingMinimized);
+            await host.DisposeAsync();
+
+            GameHost next = new GameHost(new LiveTransport(), new ListLog(), dataRoot: root);
+            DecalAgent nextAgent = new DecalAgent(next, null);
+            next.AddPlugin(nextAgent);
+            await next.StartAsync();
+            Assert.True(next.KeepPlayingMinimized);
+            view = await OnGameThread(next, () => nextAgent.View);
+            Assert.True(view.TryGet("chkKeepPlaying", out keep));
+            Assert.True(keep.Checked);
+            await next.DisposeAsync();
+        }
+
         [Fact]
         public async Task AHostWithoutAnOverlayCannotHoldKeys()
         {

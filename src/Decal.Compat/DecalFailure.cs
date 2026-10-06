@@ -31,6 +31,8 @@ namespace Decal.Compat
             ("uTank2", "the real Virindi Tank, which this host replaces with its own"),
             ("VirindiHUDs", "the real Virindi HUDs, which this host replaces with its own"),
             ("VirindiHotkeySystem", "the real Virindi Hotkey System, which this host replaces with its own"),
+            // Mag-Tools' inventory packer, auto buy-sell and auto trade-add; Item Tool's loot profiles.
+            ("VTClassic", "Virindi Tank's loot profile reader from its folder, which this host's Virindi Tank keeps to itself"),
         };
 
         /// <summary>
@@ -110,7 +112,7 @@ namespace Decal.Compat
                 return "nothing it said.";
 
             // Decal's chat links, "<Tell:IIDString:123:command>text<\Tell>", read as their text.
-            text = Regex.Replace(text, @"<Tell:[^>]*>(.*?)<\\Tell>", "$1");
+            text = AC.Host.Plugins.ChatMarkup.Visible(text);
 
             Match match;
             if ((match = Regex.Match(text, "Could not load file or assembly '([^',]+)")).Success)
@@ -253,7 +255,10 @@ namespace Decal.Compat
                 || name.StartsWith("Decal.Filters", StringComparison.Ordinal) || name.StartsWith("Decal.FileService", StringComparison.Ordinal)
                 || name.StartsWith("Decal.Interop.Core", StringComparison.Ordinal) || name.Contains(" Decal.Adapter.", StringComparison.Ordinal)
                 || name.Contains(" VirindiViewService.", StringComparison.Ordinal) || name.Contains(" Decal.Filters.", StringComparison.Ordinal)
-                || name.Contains(" Decal.Interop.Core.", StringComparison.Ordinal) || name == "Microsoft.DirectX");
+                || name.Contains(" Decal.Interop.Core.", StringComparison.Ordinal) || name == "Microsoft.DirectX"
+                || name.StartsWith("VirindiHotkeySystem", StringComparison.Ordinal) || name.Contains(" VirindiHotkeySystem.", StringComparison.Ordinal)
+                || name.StartsWith("VirindiHUDs", StringComparison.Ordinal) || name.Contains(" VirindiHUDs.", StringComparison.Ordinal)
+                || name.StartsWith("uTank2", StringComparison.Ordinal) || name.Contains(" uTank2.", StringComparison.Ordinal));
 
         /// <summary>Whether a missing file is an assembly the runtime looked for, rather than a file of the plugin's own.</summary>
         private static bool IsAssemblyLoad(IOException ex)

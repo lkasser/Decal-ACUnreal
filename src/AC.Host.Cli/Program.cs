@@ -23,7 +23,9 @@ namespace AC.Host.Cli
   achost run --server <host> [options]      Host plugins over a live relay
   achost replay <capture> [options]         Host plugins over a recorded session
   achost ctl <command>                      Drive the running host: status, act on|off,
-                                            reload [plugin], enable|disable <plugin>, rescan
+                                            reload [plugin], enable|disable <plugin>, rescan,
+                                            characters, logout [keys|messages],
+                                            login <character> [keys|messages]
 
 run options:
   --server <host>        Real server host or address (required)

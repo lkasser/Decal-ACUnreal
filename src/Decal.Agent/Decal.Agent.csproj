@@ -39,8 +39,13 @@
 
   <!-- Lays the Decal compatibility plugin out under plugins\Decal.Compat. The files are named
        rather than globbed because a build with -o puts every project's output in one folder,
-       where a glob would sweep up the Agent itself: Decal.Compat, the five stand-ins it hands
-       Decal plugins, and Mono.Cecil. The host supplies everything else it refers to. -->
+       where a glob would sweep up the Agent itself: Decal.Compat, the eight stand-ins it hands
+       Decal plugins (and the loot types the uTank2 one forwards to), and Mono.Cecil's
+       assemblies. The host supplies everything else it refers to (the AC.* assemblies). Every
+       runtime assembly in Decal.Compat.deps.json must be one or the other:
+       DecalCompatLayoutTests holds this list to that, and build-installers.ps1 checks the
+       published folder against it. -->
+
   <Target Name="LayOutDecalCompat" AfterTargets="Build">
     <PropertyGroup>
       <DecalCompatFolder>@(DecalCompatOutput->'%(RootDir)%(Directory)')</DecalCompatFolder>
@@ -51,11 +56,19 @@
       <DecalCompatFile Include="$(DecalCompatFolder)Decal.FileService.dll;$(DecalCompatFolder)Decal.FileService.pdb" />
       <DecalCompatFile Include="$(DecalCompatFolder)Decal.Interop.Core.dll;$(DecalCompatFolder)Decal.Interop.Core.pdb" />
       <DecalCompatFile Include="$(DecalCompatFolder)VirindiViewService.dll;$(DecalCompatFolder)VirindiViewService.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)VirindiHotkeySystem.dll;$(DecalCompatFolder)VirindiHotkeySystem.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)VirindiHUDs.dll;$(DecalCompatFolder)VirindiHUDs.pdb" />
+      <DecalCompatFile Include="$(DecalCompatFolder)uTank2.dll;$(DecalCompatFolder)uTank2.pdb;$(DecalCompatFolder)UTank2.Abstractions.dll;$(DecalCompatFolder)UTank2.Abstractions.pdb" />
       <DecalCompatFile Include="$(DecalCompatFolder)Microsoft.DirectX.dll;$(DecalCompatFolder)Microsoft.DirectX.pdb" />
-      <!-- Rewrites registered plugins' working copies (RegistryRewrite). -->
-      <DecalCompatFile Include="$(DecalCompatFolder)Mono.Cecil.dll" />
+      <!-- Rewrites registered plugins' working copies: Mono.Cecil for RegistryRewrite, and its
+           Rocks for PointerRewrite, whose absence left Global Inventory's SQLite unwidened live.
+           All four of the package's assemblies, as Decal.Compat.deps.json lists them. -->
+      <DecalCompatFile Include="$(DecalCompatFolder)Mono.Cecil.dll;$(DecalCompatFolder)Mono.Cecil.Rocks.dll;$(DecalCompatFolder)Mono.Cecil.Pdb.dll;$(DecalCompatFolder)Mono.Cecil.Mdb.dll" />
     </ItemGroup>
     <Error Condition="!Exists('$(DecalCompatFolder)Decal.Compat.dll')" Text="Decal.Compat was built, but not to $(DecalCompatFolder)." />
+    <!-- A named file that is not there is a plugin that fails at its first use, as VGI's search
+         did: better the build says so. -->
+    <Error Condition="!Exists('%(DecalCompatFile.FullPath)') And '%(DecalCompatFile.Extension)' == '.dll'" Text="Decal.Compat's %(DecalCompatFile.Filename)%(DecalCompatFile.Extension) is not in $(DecalCompatFolder), and the plugin needs it beside it." />
     <Copy SourceFiles="@(DecalCompatFile)" Condition="Exists('%(FullPath)')" DestinationFolder="$(OutDir)plugins\Decal.Compat" SkipUnchangedFiles="true" />
     <!-- The 64-bit native DLLs Decal plugins are given in place of their own 32-bit ones. -->
     <ItemGroup>

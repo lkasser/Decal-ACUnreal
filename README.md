@@ -4,8 +4,10 @@ A Decal for [AC:Unreal](https://www.thwargle.com/unreal/), the Unreal Engine 5 r
 Asheron's Call client. It lets plugins - Decal's own, and new ones written for it - run beside
 the game again.
 
-AC:Unreal has no plugin or scripting API and does not load Decal, so this does the job from
-outside the game:
+AC:Unreal does not load Decal, and nothing inside it can host a Decal plugin: since release 94 it
+runs sandboxed Lua plugins of its own, with no DLLs, no .NET, no files and no IPC (see
+[docs/ac-unreal-96-notes.md](docs/ac-unreal-96-notes.md)). So this does the job from outside the
+game:
 
 - **A UDP proxy** sits between AC:Unreal and the server. The client speaks the AC wire protocol
   to ACE and takes any host and port, so the relay sees the whole session without the client's
@@ -15,11 +17,17 @@ outside the game:
   allows it, to act: appraise, use, move items, speak, walk, cast.
 - **Decal compatibility.** Stand-ins for `Decal.Adapter`, `Decal.FileService`,
   `Decal.Interop.Core` and Virindi View Service let existing Decal plugins load and draw their
-  windows.
+  windows; stand-ins for Virindi Hotkey System, Virindi HUDs' Status HUD and Virindi Tank's
+  `uTank2` API serve the plugins that call them, such as Mag-Tools.
 - **An in-game overlay.** A small C++ DLL injected into the client hooks its D3D12 swap chain and
   draws Decal's bar and the plugins' windows with Dear ImGui in the game's own frame.
 - **Decal Agent**, a tray program that runs all of this, and **DecalAgentSetup.exe**, its
   installer.
+
+The host keeps on while the game is minimized, takes the character to the character list and
+back into the world without a password (`achost ctl logout` / `login`), and reads AC:Unreal's own
+plugin settings, read-only, to warn when its Unattended Combat Manager (UCM) is enabled beside a
+plugin that plays the character.
 
 Virindi Tank, as a plugin for this host, is a separate repository:
 [VirindiTank-ACUnreal](https://github.com/lkasser/VirindiTank-ACUnreal).
@@ -62,6 +70,13 @@ src/Decal.FileService    plugins bind to it by name; likewise Decal.FileService 
 src/Decal.Interop.Core   Decal.Interop.Core.
 src/Decal.Compat       Loads and runs Decal plugins (from Decal's registry or a folder).
 src/VirindiViewService The VVS surface Decal plugins call, drawn by the overlay.
+src/VirindiHotkeySystem Stand-ins for Virindi Hotkey System's and Virindi HUDs' plugin APIs
+src/VirindiHUDs          (VHotkeySystem; the Status HUD's StatusModel), written from their
+                         public surface.
+src/uTank2             Virindi Tank's API for other Decal plugins (PluginCore.PC, the loot
+                       calls), answering as Virindi Tank did with no loot profile; it forwards
+                       the loot types to src/UTank2.Abstractions, the loot contract, kept in step
+                       with the Virindi Tank repository's copy.
 src/Microsoft.DirectX  A stub of the Managed DirectX types plugins name.
 src/Decal.Agent        DecalAgent.exe, the tray program.
 src/Setup.Common       What the setups share; src/Decal.Setup is DecalAgentSetup.exe and
@@ -69,9 +84,12 @@ src/Decal.Setup          src/Setup.Uninstall is Uninstall.exe.
 src/Setup.Uninstall
 native/                The C++ overlay DLL (D3D12 hook, Dear ImGui), its build and test scripts.
 third_party/sqlite     A 64-bit sqlite3.dll for Decal plugins that ship a 32-bit one.
+third_party/Mag-Filter Builds Mag-nus's Mag-Filter from its own sources, fetched at a pinned
+                       commit and never committed here (fetch script, project and README only).
 tests/                 xUnit tests, and small plugins built to be loaded by them.
 tools/                 run-host.ps1, start-game.ps1, update-agent.ps1, build-installers.ps1,
-                       and enumdump (reads protocol enums out of a local ACE server).
+                       install-plugin.ps1 (Mag-Filter), PackageCheck.ps1, and enumdump (reads
+                       protocol enums out of a local ACE server).
 docs/                  How the host works, what AC:Unreal offers, the installer.
 ```
 
@@ -82,11 +100,13 @@ dotnet build Decal-ACUnreal.slnx
 dotnet test Decal-ACUnreal.slnx
 ```
 
-About 860 tests: AC.Protocol 58, AC.Proxy 72, AC.Dat 44, AC.Overlay 62, Setup 63 and AC.Host 561.
-Some read files that are never committed and skip cleanly without them: the AC.Dat tests that
+About 1,060 tests: AC.Protocol 58, AC.Proxy 72, AC.Dat 45, AC.Overlay 68, Setup 64 and AC.Host
+755. Some read files that are never committed and skip cleanly without them: the AC.Dat tests that
 read a real `client_portal.dat` and `client_cell_1.dat` (they look in `C:\ACE\Dats` and the usual
-Turbine folders), and the AC.Host tests that replay session captures (`*.acap`), which hold
-account names and so are never committed.
+Turbine folders), the AC.Host tests that replay session captures (`*.acap`), which hold account
+names and so are never committed, the tests of the player's installed Mag-Tools and Global
+Inventory (found through Decal's registry), and the Mag-Filter tests until
+`third_party\Mag-Filter\fetch.ps1` has fetched its sources.
 
 The overlay is built separately, and needs MSVC:
 
@@ -186,6 +206,14 @@ is the full one. A Decal plugin needs nothing: Decal.Compat loads it as Decal wo
 ## Third-party
 
 - **SQLite** (`third_party/sqlite`): public domain; see its README.
+- **Mag-Filter** (`third_party/Mag-Filter`): Mag-nus's Decal network filter from
+  [Mag-Plugins](https://github.com/Mag-nus/Mag-Plugins), licensed under the **GNU LGPL 2.1**, not
+  MIT. None of its source is in this repository: the folder holds only this project's fetch
+  script, build project and README, which fetch and build Mag-Plugins' own files, unchanged, at a
+  pinned commit. `tools\install-plugin.ps1 -Plugin MagFilter` installs the built DLL with Mag-Plugins'
+  licence beside it. The tests that exercise Mag-Tools load the player's own installed copy.
+- **`src/UTank2.Abstractions`**: the loot plugins' contract, MIT, the same project as in the
+  Virindi Tank repository (where VTClassic is built on it); `src/uTank2` forwards to it.
 - **Decal's `messages.xml`** (`src/Decal.Adapter`): Decal's message schema, as Decal shipped it,
   under Decal's own terms. The stand-ins are signed with Decal's *public* keys
   (`*PublicKey.snk`, public halves only) so Decal plugins bind to them; no private key is here.
@@ -202,7 +230,8 @@ is the full one. A Decal plugin needs nothing: Decal.Compat loads it as Decal wo
   installed Decal and Virindi programs, to draw their windows as they looked.
 
 Virindi Tank, Virindi View Service, Virindi HUDs and Virindi Hotkey System are closed source and
-are not included; the stand-ins here are written from their public behaviour.
+are not included; the stand-ins here (`src/VirindiViewService`, `src/VirindiHotkeySystem`,
+`src/VirindiHUDs`, `src/uTank2`) are written from their public surface and behaviour.
 
 ## Licence
 

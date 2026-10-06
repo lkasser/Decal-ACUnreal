@@ -15,6 +15,13 @@ namespace AC.Host.Actions
         /// <summary>A whole message to send, not a game action: <see cref="ClientCommand.Type"/> is its opcode.</summary>
         Message,
 
+        /// <summary>
+        /// One of the client's chat emotes ("*dance*"): a motion to play,
+        /// <see cref="ClientCommand.Motion"/>, and its words for everyone else, the SoulEmote
+        /// action in <see cref="ClientCommand.Type"/> and its fields.
+        /// </summary>
+        Emote,
+
         /// <summary>One of the client's own commands that only changes the client - its windows, its settings.</summary>
         ClientOnly,
 
@@ -54,7 +61,20 @@ namespace AC.Host.Actions
         /// <summary>For a tell, whom it goes to - remembered for "/rt".</summary>
         public string TellTarget { get; private set; }
 
+        /// <summary>For a chat emote, the motion command it plays; 0 for one whose command the client did not know.</summary>
+        public uint Motion { get; private set; }
+
+        /// <summary>For a chat emote, the words it sends: what everyone else reads after the character's name.</summary>
+        public string EmoteText { get; private set; }
+
         internal static ClientCommand Action(uint type, PayloadWriter fields) => new ClientCommand(ClientCommandKind.Action, type, fields?.ToArray(), null);
+
+        internal static ClientCommand Emote(uint motion, string text)
+            => new ClientCommand(ClientCommandKind.Emote, GameActions.SoulEmote, new PayloadWriter().String(text).ToArray(), null)
+            {
+                Motion = motion,
+                EmoteText = text,
+            };
 
         internal static ClientCommand Message(uint opcode, byte[] payload) => new ClientCommand(ClientCommandKind.Message, opcode, payload, null);
 
@@ -68,6 +88,7 @@ namespace AC.Host.Actions
             {
                 ClientCommandKind.Action => $"action 0x{Type:X4} ({Fields.Length} bytes)",
                 ClientCommandKind.Message => $"message 0x{Type:X4} ({Fields.Length} bytes)",
+                ClientCommandKind.Emote => $"emote 0x{Motion:X8} \"{EmoteText}\"",
                 _ => Kind + ": " + Reason,
             };
     }
@@ -89,6 +110,16 @@ namespace AC.Host.Actions
 
         /// <summary>A number for the room request's cookie, which the server hands back in its answer.</summary>
         public uint Cookie { get; init; } = 1;
+
+        /// <summary>
+        /// Looks a chat emote up by its pose, the word between the asterisks: the client's
+        /// ChatPoseTable (<see cref="IGameData.GetChatEmote"/>). Null without the client's data,
+        /// when no emote can be told from any other line.
+        /// </summary>
+        public Func<string, AC.Dat.ChatEmote> ChatEmotes { get; init; }
+
+        /// <summary>The character's gender (the server's Gender, 113): 1 male, 2 female, 0 not known - for an emote's "%p".</summary>
+        public int Gender { get; init; }
     }
 
     /// <summary>
@@ -112,8 +143,17 @@ namespace AC.Host.Actions
     /// </para>
     /// <para>
     /// Commands that change only the client - its windows, its filters, its frame rate - are
-    /// reported as such; nothing outside the client can reach them. A typed "*dance*" is a
-    /// motion the client plays, not a message, and is reported the same way.
+    /// reported as such; nothing outside the client can reach them.
+    /// </para>
+    /// <para>
+    /// A line that is a word between asterisks - "*dance*", "*come here*" - is one of the
+    /// client's chat emotes when its ChatPoseTable has the word (ClientCommunicationSystem's
+    /// pose handler in acclient.exe): the emote's motion, which the client played and sent in a
+    /// MoveToState, and its words for everyone else, sent as a SoulEmote (0x01E1) with "%p" made
+    /// "his", or "her" for a character whose Gender is not 1. The client sent the words whatever
+    /// became of the motion, and showed "You" and its own line in its chat; the server's answer
+    /// to the SoulEmote, which ACE sends the speaker too, stands for that line here. A word the
+    /// table does not have is said aloud, as the client said it.
     /// </para>
     /// </remarks>
     public static class ClientCommands
@@ -227,9 +267,15 @@ namespace AC.Host.Actions
             if (text.Length == 0)
                 return ClientCommand.Not(ClientCommandKind.NotSent, "There is nothing to say.");
 
-            // "*dance*": the client plays the emote's motion itself.
-            if (text.Length > 2 && text[0] == '*' && text[text.Length - 1] == '*' && text.IndexOf(' ') < 0)
-                return ClientCommand.Not(ClientCommandKind.ClientOnly, $"\"{text}\" is an emote the game client plays as a motion of its own.");
+            // "*dance*": one of the client's chat emotes, when its table has the word.
+            if (text.Length > 2 && text[0] == '*' && text[text.Length - 1] == '*')
+            {
+                if (context.ChatEmotes == null)
+                    return ClientCommand.Not(ClientCommandKind.ClientOnly, $"\"{text}\" is one of the game client's emotes, and its table of them is not loaded.");
+
+                if (context.ChatEmotes(text.Substring(1, text.Length - 2).Trim()) is AC.Dat.ChatEmote emote)
+                    return ClientCommand.Emote(ChatEmoteCommands.Find(emote.Command), EmoteWords(emote, context.Gender));
+            }
 
             if (text[0] != '/' && text[0] != '@')
                 return Talk(text);
@@ -348,6 +394,10 @@ namespace AC.Host.Actions
         }
 
         private static ClientCommand Talk(string text) => ClientCommand.Action(GameActions.Talk, new PayloadWriter().String(text));
+
+        /// <summary>An emote's words for everyone else, "%p" made the character's: "his", unless its Gender says otherwise.</summary>
+        private static string EmoteWords(AC.Dat.ChatEmote emote, int gender)
+            => emote.Others.Replace("%p", gender == 0 || gender == 1 ? "his" : "her", StringComparison.Ordinal);
 
         private static ClientCommand Usage(string word, string arguments)
             => ClientCommand.Not(ClientCommandKind.NotSent, $"Usage: /{word} {arguments}");

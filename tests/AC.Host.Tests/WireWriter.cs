@@ -156,7 +156,8 @@ namespace AC.Host.Tests
             float? forwardSpeed = null,
             float? sidestepSpeed = null,
             float? turnSpeed = null,
-            int queuedAnimations = 0)
+            int queuedAnimations = 0,
+            ushort queuedCommand = 0x3D)
         {
             uint flags = 0;
             if (style.HasValue) flags |= 0x01;
@@ -179,7 +180,7 @@ namespace AC.Host.Tests
 
             for (int i = 0; i < queuedAnimations; i++)
             {
-                U16(0x3D);   // command
+                U16(queuedCommand);   // command
                 U16(0);      // packed sequence
                 F32(1f);     // speed
             }

@@ -62,6 +62,13 @@ namespace AC.Host.Decoding
         }
 
         /// <summary>
+        /// Whether a message to the server asks about one object - IdentifyObject or QueryHealth -
+        /// which from the client is the sign of what the player selected.
+        /// </summary>
+        public static bool IsSelectionQuestion(AcMessage message)
+            => TryReadActionType(message, out uint actionType) && actionType is GameActions.IdentifyObject or GameActions.QueryHealth;
+
+        /// <summary>
         /// What the client sent. Movement is read because the server does not echo it back
         /// to the mover, so the only account of where the character is heading is the
         /// client's own. Selection is read for the same reason: the server is never told
@@ -70,10 +77,44 @@ namespace AC.Host.Decoding
         /// are the only sign of it there is. The rest the client does is its own business,
         /// and the server's reply tells us the outcome anyway.
         /// </summary>
-        private static DecodeOutcome ApplyClientAction(AcMessage message, WorldState world)
+        /// <remarks>
+        /// The host's own questions go on in the client's packets too - Virindi Tank appraising
+        /// the character's gear for its mana, a plugin's RequestId - and say nothing of what the
+        /// player selected: Decal raised ItemSelected for the client's selection alone, never for
+        /// a plugin's appraisal, so <paramref name="fromHost"/> leaves the selection as it was.
+        /// </remarks>
+        private static DecodeOutcome ApplyClientAction(AcMessage message, WorldState world, bool fromHost)
         {
-            if (message.Opcode != Opcodes.GameAction)
-                return DecodeOutcome.Ignored;
+            switch (message.Opcode)
+            {
+                case Opcodes.GameAction:
+                    break;
+
+                // The client going between the character list and the world, as captured: asking
+                // to log off (empty, and again every two seconds until answered), asking to enter
+                // (empty), then naming the character - its id and the account's name.
+                case Opcodes.CharacterLogOff:
+                    return Do(world.NoteLogOffRequested);
+
+                case Opcodes.CharacterEnterWorldRequest:
+                    return Do(world.NoteEnterWorldRequested);
+
+                case Opcodes.CharacterEnterWorld:
+                {
+                    SpanReader enter = new SpanReader(message.Payload.Span);
+                    if (!enter.TryReadUInt32(out uint characterId) || !enter.TryReadString(out _))
+                        return DecodeOutcome.Malformed;
+
+                    world.NoteEnterWorld(characterId);
+                    return DecodeOutcome.Applied;
+                }
+
+                default:
+                    return DecodeOutcome.Ignored;
+            }
+
+            // Only a character in the world acts.
+            world.NoteInWorldTraffic();
 
             SpanReader reader = new SpanReader(message.Payload.Span);
 
@@ -114,7 +155,8 @@ namespace AC.Host.Decoding
                     if (!reader.TryReadUInt32(out uint objectId))
                         return DecodeOutcome.Malformed;
 
-                    world.SetClientSelection(objectId);
+                    if (!fromHost)
+                        world.SetClientSelection(objectId);
                     return DecodeOutcome.Applied;
                 }
 
@@ -230,12 +272,25 @@ namespace AC.Host.Decoding
         }
 
         public static DecodeOutcome Apply(AcMessage message, PacketDirection direction, WorldState world)
+            => Apply(message, direction, world, fromHost: false);
+
+        /// <param name="fromHost">
+        /// Whether a message going to the server is the host's own, sent as the client rather
+        /// than by it (<see cref="AC.Host.Transport.GameMessageEventArgs.FromHost"/>).
+        /// </param>
+        public static DecodeOutcome Apply(AcMessage message, PacketDirection direction, WorldState world, bool fromHost)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             if (world == null) throw new ArgumentNullException(nameof(world));
 
             if (direction != PacketDirection.Inbound)
-                return ApplyClientAction(message, world);
+                return ApplyClientAction(message, world, fromHost);
+
+            // What only a character in the world is sent: the server describing and moving what is
+            // around it. Never at the character list, where the server says nothing but the list,
+            // its name and, every hundred seconds, a ping.
+            if (message.Opcode is Opcodes.ObjectCreate or Opcodes.UpdatePosition or Opcodes.Motion)
+                world.NoteInWorldTraffic();
 
             SpanReader reader = new SpanReader(message.Payload.Span);
 
@@ -263,10 +318,20 @@ namespace AC.Host.Decoding
                 // done, then the character list - which on its own, with a character in the world,
                 // says the same - and the account booted.
                 case Opcodes.CharacterLogOff:
-                    return Do(() => world.LeaveWorld("the server logged the character off"));
+                    return Do(() =>
+                    {
+                        // At the character list as the leaving is told of, the character still described.
+                        world.NoteCharacterList();
+                        world.LeaveWorld("the server logged the character off");
+                    });
 
                 case Opcodes.CharacterList:
                     return DecodeCharacterList(ref reader, world);
+
+                case Opcodes.CharacterError:
+                    return reader.TryReadUInt32(out uint characterError)
+                        ? Do(() => world.NoteCharacterError(characterError))
+                        : DecodeOutcome.Malformed;
 
                 case Opcodes.AccountBoot:
                     return DecodeAccountBoot(ref reader, world);
@@ -672,6 +737,7 @@ namespace AC.Host.Decoding
         /// </summary>
         private static DecodeOutcome DecodeCharacterList(ref SpanReader reader, WorldState world)
         {
+            world.NoteCharacterList();
             world.LeaveWorld("the server went back to the character list");
 
             if (!reader.TrySkip(4) || !reader.TryReadUInt32(out uint count) || count > reader.Remaining / 8)
@@ -687,10 +753,10 @@ namespace AC.Host.Decoding
                 characters.Add(new AccountCharacter(id, name, deleteTimeout));
             }
 
-            if (!reader.TrySkip(8)) return DecodeOutcome.Malformed; // a word, and the slots
+            if (!reader.TrySkip(4) || !reader.TryReadUInt32(out uint slots)) return DecodeOutcome.Malformed;
             if (!reader.TryReadString(out string account)) return DecodeOutcome.Malformed;
 
-            world.SetAccount(account, characters);
+            world.SetAccount(account, characters, (int)Math.Min(slots, int.MaxValue));
             return DecodeOutcome.Applied;
         }
 
@@ -704,6 +770,7 @@ namespace AC.Host.Decoding
             if (reader.Remaining > 0 && !reader.TryReadString(out reason))
                 return DecodeOutcome.Malformed;
 
+            world.NoteBooted();
             world.LeaveWorld(("the server booted the account " + reason.Trim()).TrimEnd());
             return DecodeOutcome.Applied;
         }
@@ -933,13 +1000,21 @@ namespace AC.Host.Decoding
                 movement.TurnSpeed = speed;
             }
 
-            // Queued animations: command, packed sequence, speed - eight bytes each.
+            // Queued animations: command, packed sequence, speed - eight bytes each. The
+            // commands are kept: the clap of a craft is one.
             if (commandCount > (uint)(reader.Remaining / 8))
                 return false;
 
-            for (uint i = 0; i < commandCount; i++)
+            if (commandCount > 0)
             {
-                if (!reader.TrySkip(8)) return false;
+                ushort[] actions = new ushort[commandCount];
+                for (uint i = 0; i < commandCount; i++)
+                {
+                    if (!reader.TryReadUInt16(out actions[i])) return false;
+                    if (!reader.TrySkip(6)) return false;
+                }
+
+                movement.Actions = actions;
             }
 
             return reader.TryAlign(4);

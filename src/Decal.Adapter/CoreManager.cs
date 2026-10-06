@@ -166,6 +166,21 @@ namespace Decal.Adapter
 
         internal void OnPluginInitComplete() => _runtime.Raise(PluginInitComplete, this, EventArgs.Empty, nameof(PluginInitComplete));
 
+        /// <summary>
+        /// The init-complete events once more, for the handlers <paramref name="theirs"/> picks out
+        /// alone, with the services started late told the plugins are up: see <see cref="DecalRuntime.CatchUp"/>.
+        /// </summary>
+        internal void CatchUpInitComplete(Func<System.Reflection.Assembly, bool> theirs, System.Collections.Generic.IReadOnlyList<ServiceBase> services)
+        {
+            _runtime.Raise(DecalRuntime.Only(FilterInitComplete, theirs), this, EventArgs.Empty, nameof(FilterInitComplete));
+            _runtime.Raise(DecalRuntime.Only(ServiceInitComplete, theirs), this, EventArgs.Empty, nameof(ServiceInitComplete));
+
+            foreach (ServiceBase service in services)
+                _runtime.Guard(_runtime.NameOf(service), () => service.InvokeAfterPlugins(), service.GetType().Assembly);
+
+            _runtime.Raise(DecalRuntime.Only(PluginInitComplete, theirs), this, EventArgs.Empty, nameof(PluginInitComplete));
+        }
+
         internal void OnFilterTermComplete() => _runtime.Raise(FilterTermComplete, this, EventArgs.Empty, nameof(FilterTermComplete));
 
         internal void OnServiceTermComplete() => _runtime.Raise(ServiceTermComplete, this, EventArgs.Empty, nameof(ServiceTermComplete));

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>uTank2</RootNamespace>
+    <AssemblyName>uTank2</AssemblyName>
+    <Description>Virindi Tank's API for other Decal plugins - PluginCore.PC, the loot plugin calls, the loot types - for Decal plugins that ask it about loot, as Mag-Tools' looter does; it answers as Virindi Tank did with no loot profile loaded.</Description>
+    <!-- The identity Mag-Tools and Virindi Item Tool ask for: utank2-i.dll is "uTank2",
+         version 1.0.0.0, never strong-named. -->
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The loot types themselves, which this assembly forwards to. -->
+    <ProjectReference Include="..\UTank2.Abstractions\UTank2.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

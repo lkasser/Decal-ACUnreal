@@ -7,6 +7,7 @@ using AC.Dat;
 using AC.Host.Decoding;
 using AC.Host.World;
 using AC.Protocol;
+using Decal.Adapter;
 using Decal.Adapter.Hosting;
 using Decal.Adapter.Wrappers;
 using Xunit;
@@ -333,6 +334,102 @@ namespace AC.Host.Tests
             Apply(host.WorldState, new WireWriter(Opcodes.PrivateUpdatePropertyInt64).U8(1).U32(1).U64(191_226_310_347UL));
 
             Assert.Equal(new[] { "complete", "xp Total 100" }, heard);
+        }
+
+        /// <summary>
+        /// A login in ACE's order, as the live journal has it: the character list, the character's
+        /// description - which names the character - then the server's word of it, its object, and
+        /// the client's word that it has entered the world. Decal raised Login as the description
+        /// filled its character filter, and LoginComplete on the client's word; so Virindi
+        /// Reporter, which keeps the luminance itself from the description it hears in
+        /// MessageProcessed and counts this session's from what it had at LoginComplete, counts
+        /// from 36,200 - not from 0, which made all of it earned this session.
+        /// </summary>
+        [Fact]
+        public void LoginCompleteComesOnTheClientsWordAfterTheDescriptionIsHeard()
+        {
+            MacroTestHost host = new MacroTestHost();
+            host.WorldState.LeaveWorld("before this login");
+            using DecalRuntime runtime = new DecalRuntime(host);
+            CharacterFilter character = runtime.Core.CharacterFilter;
+            runtime.CompleteStartup();
+
+            // A listener that behaves as Virindi Reporter's luminance counting (`cXPCounting`) was
+            // seen to: the luminance taken from each description it hears.
+            List<string> heard = new List<string>();
+            long luminance = 0;
+            long luminanceAtStart = -1;
+            runtime.Core.MessageProcessed += (_, e) =>
+            {
+                if (e.Message.Type != 0xF7B0 || e.Message.Value<int>("event") != 0x0013)
+                    return;
+
+                MessageStruct qwords = e.Message.Struct("properties").Struct("qwords");
+                for (int i = 0; i < qwords.Count; i++)
+                {
+                    if (qwords.Struct(i).Value<int>("key") == 6)
+                        luminance = qwords.Struct(i).Value<long>("value");
+                }
+
+                heard.Add($"described {luminance}");
+            };
+            character.Login += (_, e) => heard.Add($"login {e.Id:X8} {character.Name} level {character.Level} xp {character.TotalXP}");
+            character.LoginComplete += (_, _) =>
+            {
+                luminanceAtStart = luminance;
+                heard.Add("complete");
+            };
+
+            const uint Me = 0x50000006;
+            host.Receive(new WireWriter(Opcodes.CharacterList).U32(0).U32(1)
+                .U32(Me).String16L("Testchar I").U32(0)
+                .U32(0).U32(11).String16L("testacct").U32(1).U32(1).ToMessage());
+            host.Receive(AcMessage.Create(Opcodes.GameEvent, SelfBuffedLogin()));
+            host.Receive(new WireWriter(Opcodes.PlayerCreate).U32(Me).ToMessage());
+            host.Receive(WireWriter.ObjectCreate(Me, "Testchar I", 1, ItemTypes.Creature, 0).ToMessage());
+            host.RaiseTick(TimeSpan.FromMilliseconds(50));
+            Assert.Equal(new[] { $"login {Me:X8} Testchar I level 275 xp 191226310247", "described 36200" }, heard);
+
+            host.Receive(MacroTestHost.ClientEntered().ToMessage(), PacketDirection.Outbound);
+            Assert.Equal(new[] { $"login {Me:X8} Testchar I level 275 xp 191226310247", "described 36200", "complete" }, heard);
+            Assert.Equal(36_200, luminanceAtStart);
+
+            // Every portal after says the same; LoginComplete was once a login.
+            host.Receive(MacroTestHost.ClientEntered(2).ToMessage(), PacketDirection.Outbound);
+            Assert.Single(heard, h => h == "complete");
+        }
+
+        /// <summary>
+        /// A login whose description never comes still has its Login before LoginComplete, on the
+        /// client's word - and the character list names the character before anything else does.
+        /// </summary>
+        [Fact]
+        public void TheClientsWordBringsLoginWhereNoDescriptionCame()
+        {
+            MacroTestHost host = new MacroTestHost();
+            host.WorldState.LeaveWorld("before this login");
+            using DecalRuntime runtime = new DecalRuntime(host);
+            CharacterFilter character = runtime.Core.CharacterFilter;
+            runtime.CompleteStartup();
+            List<string> heard = new List<string>();
+            character.Login += (_, e) => heard.Add($"login {e.Id:X8} {character.Name}");
+            character.LoginComplete += (_, _) => heard.Add("complete");
+
+            host.Receive(new WireWriter(Opcodes.CharacterList).U32(0).U32(1)
+                .U32(MacroTestHost.PlayerId).String16L("Listed").U32(0)
+                .U32(0).U32(11).String16L("testacct").U32(1).U32(1).ToMessage());
+            host.Receive(new WireWriter(Opcodes.PlayerCreate).U32(MacroTestHost.PlayerId).ToMessage());
+            host.RaiseTick(TimeSpan.FromMilliseconds(50));
+            Assert.Empty(heard);
+
+            host.Receive(MacroTestHost.ClientEntered().ToMessage(), PacketDirection.Outbound);
+            Assert.Equal(new[] { $"login {MacroTestHost.PlayerId:X8} Listed" }, heard);
+
+            // LoginComplete waits for the character's own object, then comes.
+            host.Receive(WireWriter.ObjectCreate(MacroTestHost.PlayerId, "Tester", 1, ItemTypes.Creature, 0).ToMessage());
+            host.RaiseTick(TimeSpan.FromMilliseconds(50));
+            Assert.Equal(new[] { $"login {MacroTestHost.PlayerId:X8} Listed", "complete" }, heard);
+            Assert.Equal("Tester", character.Name);
         }
 
         /// <summary>

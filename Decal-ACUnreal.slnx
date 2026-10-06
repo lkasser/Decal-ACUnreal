@@ -19,6 +19,10 @@
     <Project Path="src/Microsoft.DirectX/Microsoft.DirectX.csproj" />
     <Project Path="src/Setup.Common/Setup.Common.csproj" />
     <Project Path="src/Setup.Uninstall/Setup.Uninstall.csproj" />
+    <Project Path="src/UTank2.Abstractions/UTank2.Abstractions.csproj" />
+    <Project Path="src/uTank2/uTank2.csproj" />
+    <Project Path="src/VirindiHotkeySystem/VirindiHotkeySystem.csproj" />
+    <Project Path="src/VirindiHUDs/VirindiHUDs.csproj" />
     <Project Path="src/VirindiViewService/VirindiViewService.csproj" />
   </Folder>
   <Folder Name="/tests/">

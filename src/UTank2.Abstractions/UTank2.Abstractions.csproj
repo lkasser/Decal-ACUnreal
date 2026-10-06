@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>uTank2</RootNamespace>
+    <AssemblyName>UTank2.Abstractions</AssemblyName>
+    <Description>Clean-room host contract for uTank2 loot plugins: item inspection, loot decisions, and the character/inventory state rules condition on.</Description>
+  </PropertyGroup>
+
+</Project>

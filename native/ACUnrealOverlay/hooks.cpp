@@ -10,9 +10,12 @@
 // - from ResizeBuffers1, whose ppPresentQueue parameter is authoritative rather than
 // inferred.
 //
-// Second, D3D12 keeps nothing alive for you. Holding a back buffer across a frame keeps a
-// reference that makes the game's own ResizeBuffers fail, so resizes must be intercepted
-// to let go first.
+// Second, D3D12 keeps nothing alive for you, and a reference kept is worse. Holding a back
+// buffer across frames makes the game's own ResizeBuffers fail, and stops it making a new
+// swap chain for its window at all. So the overlay takes the back buffer it draws into for
+// that frame alone, and the resize hooks only wait for the GPU before the game's resize -
+// everything else the overlay draws with outlives every resize, as the ImGui backend,
+// set up once, expects.
 //
 // Third, the ImGui backend does less than its D3D11 counterpart: it does not set
 // descriptor heaps, does not bind a render target, and - having no fence of its own -
@@ -27,10 +30,14 @@
 #include <windows.h>
 
 #include <d3d12.h>
+#include <dwmapi.h>
 #include <dxgi1_4.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include <MinHook.h>
@@ -97,15 +104,41 @@ std::atomic<ID3D12CommandQueue*> g_queue{nullptr};
 std::once_flag g_ipcOnce;
 Ipc* g_ipc = nullptr;
 
+// The host's pipe. native/tests/render_test.cpp builds this file with OVERLAY_TEST_PIPE, so the
+// overlay it draws can never reach a Decal Agent running for the game.
+#ifdef OVERLAY_TEST_PIPE
+constexpr wchar_t kPipeName[] = L"achost-overlay-render-test";
+#else
+constexpr wchar_t kPipeName[] = L"achost-overlay";
+#endif
 
-// Everything the renderer needs, torn down and rebuilt together on a resize.
-struct Frame {
+// One of the frames the overlay may have on the GPU at once: its command allocator, its view of
+// the back buffer it draws into, and the fence value that says the GPU is done with both. Used
+// in turn. The ImGui backend keeps as many vertex buffers and reuses them in the same turn with
+// no fence of its own, so the two counts are the same, fixed when the renderer is made - not the
+// game's buffer count, which a resize may change.
+struct Slot {
     ID3D12CommandAllocator* allocator = nullptr;
-    ID3D12Resource* backBuffer = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
     UINT64 fenceValue = 0;
 };
 
+// The game's back buffers as last seen, to tell when they change.
+struct Target {
+    const void* chain = nullptr;  // which swap chain, compared and never followed
+    UINT width = 0;
+    UINT height = 0;
+    UINT buffers = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+};
+
+// Made once, on the first frame, and kept until the overlay unloads - resizes included. Nothing
+// here depends on the game's back buffers: the overlay takes the one it draws into afresh each
+// frame and lets it go once the frame is submitted. A reference kept between frames stops the
+// game's ResizeBuffers, and stops the game making a new swap chain for its window at all.
+//
+// Remaking any of it on a resize is how it went wrong before: the texture heap was made anew
+// while the ImGui backend, set up once, kept every font and image in the old one.
 struct Renderer {
     bool ready = false;
     bool failed = false;
@@ -118,16 +151,44 @@ struct Renderer {
     HANDLE fenceEvent = nullptr;
     UINT64 fenceValue = 0;
 
-    std::vector<Frame> frames;
+    std::vector<Slot> slots;
+    UINT64 frameCount = 0;
     std::vector<bool> srvUsed;
+
+    // The back-buffer format ImGui's pipeline is built for; false once rebuilding it failed.
+    DXGI_FORMAT pipelineFormat = DXGI_FORMAT_UNKNOWN;
+    bool pipelineReady = false;
+
+    Target target;
+
+    // Whether the last frame was drawn, or passed over as minimized or too small; and whether
+    // the next frame drawn is the first since, or the first of all, and so worth a line.
+    bool drawing = true;
+    bool reportNextFrame = true;
 
     HWND window = nullptr;
     WNDPROC originalWndProc = nullptr;
 };
 
 Renderer g_renderer;
+std::mutex g_rendererGate;
 
-// Keys held down in the game for the host. Touched under g_rendererGate only.
+// The game's window, for what runs off the render thread - the key pump and the parking. Set
+// once the renderer has found it.
+std::atomic<HWND> g_window{nullptr};
+
+// Presents seen, whether or not the overlay drew into them. Only whether this still moves
+// matters: it is how the key pump tells a game that draws from one that has stopped.
+std::atomic<uint64_t> g_frames{0};
+
+// The window is off-screen in place of minimized; see "playing on while minimized" below.
+std::atomic<bool> g_parked{false};
+
+// Keys held down in the game for the host. Touched under g_keysGate only - a lock of their own
+// rather than the renderer's, so the key pump never waits behind a frame being drawn, nor a
+// frame behind the pump.
+std::mutex g_keysGate;
+
 HeldKeys& Keys() {
     static HeldKeys keys([](uint16_t key, bool down) {
         static int logged = 0;
@@ -135,11 +196,350 @@ HeldKeys& Keys() {
             ++logged;
             LogLine(std::string(down ? "Holding" : "Releasing") + " key " + std::to_string(key) + " for the host.");
         }
-        PostKeyToWindow(g_renderer.window, key, down);
+        PostKeyToWindow(g_window.load(std::memory_order_acquire), key, down);
     });
     return keys;
 }
-std::mutex g_rendererGate;
+
+// The held keys' clock. Touched under g_keysGate only, like the keys.
+KeyPump& Pump() {
+    static KeyPump pump(
+        Keys(),
+        [](const std::string& line) { LogLine(line); },
+        [](const std::string& value) {
+            if (g_ipc == nullptr) return;
+            Command told;
+            told.name = "game-window";
+            told.value = value;
+            g_ipc->Send(told);
+        });
+    return pump;
+}
+
+// ---------------------------------------------------------------- clicks for the host
+
+// Where the player had the pointer before a click of the host's moved it, and where the click
+// put it: put back afterwards, unless the player has moved it since. Touched under g_keysGate.
+POINT g_pointerBefore{};
+POINT g_pointerPut{};
+bool g_pointerMoved = false;
+
+// One step of a click for the host, in the game's window. The pointer is brought to the point
+// as well as the messages posted there: Unreal takes a button press at the point the message
+// gives, but counts it a click only over the button its own idea of the pointer is over, and
+// that it reads from the real pointer. A parked window is off every screen, where the pointer
+// cannot go; the messages go alone.
+void PostMouseStep(MouseStep step, const Click& click, const Click::Point& point) {
+    HWND window = g_window.load(std::memory_order_acquire);
+
+    if (step == MouseStep::Restore) {
+        POINT now{};
+        if (g_pointerMoved && GetCursorPos(&now) != FALSE && now.x == g_pointerPut.x && now.y == g_pointerPut.y)
+            SetCursorPos(g_pointerBefore.x, g_pointerBefore.y);
+        g_pointerMoved = false;
+        return;
+    }
+
+    RECT client{};
+    if (window == nullptr || GetClientRect(window, &client) == FALSE || client.right <= client.left || client.bottom <= client.top) {
+        if (step == MouseStep::Move) LogLine("Did not click for the host: the game window has no area to click in now - it may be minimized.");
+        return;
+    }
+
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    const POINT at = PlaceInLayout(width, height, click.layout_width, click.layout_height, point.x, point.y, click.ui_scale);
+    const LPARAM where = MAKELPARAM(at.x, at.y);
+
+    switch (step) {
+        case MouseStep::Move: {
+            POINT screen = at;
+            ClientToScreen(window, &screen);
+            if (MonitorFromPoint(screen, MONITOR_DEFAULTTONULL) != nullptr) {
+                if (!g_pointerMoved && GetCursorPos(&g_pointerBefore) != FALSE) g_pointerMoved = true;
+                SetCursorPos(screen.x, screen.y);
+                g_pointerPut = screen;
+            }
+            PostMessageW(window, WM_MOUSEMOVE, kInjectedMouseMarker, where);
+            LogFormat("Clicking %d,%d of the game window's %dx%d client area for the host (%d,%d of the layout, drawn at %g%%).", static_cast<int>(at.x),
+                      static_cast<int>(at.y), width, height, point.x, point.y, ClientUiScale(click.ui_scale, width, height) * 100.0);
+            break;
+        }
+        case MouseStep::Down:
+            PostMessageW(window, WM_LBUTTONDOWN, MK_LBUTTON | kInjectedMouseMarker, where);
+            break;
+        case MouseStep::Up:
+            PostMessageW(window, WM_LBUTTONUP, kInjectedMouseMarker, where);
+            break;
+        default:
+            break;
+    }
+}
+
+// The host's clicks, made on the key pump's clock. Touched under g_keysGate only.
+Clicker& Clicks() {
+    static Clicker clicks(&PostMouseStep, [](const std::string& line) { LogLine(line); });
+    return clicks;
+}
+
+// ---------------------------------------------------------------- the key pump
+
+// Presses, refreshes and lets go of the held keys on a thread of its own, so none of it waits
+// on a frame: a minimized game presents few or none, and keys applied only from Present were
+// neither pressed nor - worse - let go once the host went quiet. The pipe wakes it when the
+// host sends a new set; otherwise it looks every kKeyPumpIntervalMs.
+std::thread g_keyPump;
+std::atomic<bool> g_keyPumpStopping{false};
+
+// Never closed: the window procedure can still be on its way in when the overlay unloads, and
+// a closed handle's number can be handed to something else, which it would then signal. One
+// event per load is the price.
+std::atomic<HANDLE> g_keyPumpWake{nullptr};
+
+// Set by the window procedure when the window is activated, deactivated, minimized or
+// restored; the pump presses the held keys again a moment later.
+std::atomic<bool> g_windowChanged{false};
+
+void WakeKeyPump() {
+    HANDLE wake = g_keyPumpWake.load(std::memory_order_acquire);
+    if (wake != nullptr) SetEvent(wake);
+}
+
+void UpdateParking(uint64_t now_ms);
+
+void PumpKeysOnce() {
+    std::vector<uint16_t> wanted;
+    uint64_t age_ms = UINT64_MAX;
+    bool connected = false;
+    if (g_ipc != nullptr) {
+        g_ipc->WantedKeys(wanted, age_ms);
+        connected = g_ipc->Connected();
+    }
+
+    GameWindowSeen seen;
+    HWND window = g_window.load(std::memory_order_acquire);
+    seen.minimized = window != nullptr && IsIconic(window) != FALSE;
+    seen.frames = g_frames.load(std::memory_order_relaxed);
+
+    const uint64_t now = GetTickCount64();
+    UpdateParking(now);
+    seen.parked = g_parked.load(std::memory_order_acquire);
+
+    Click click;
+    const bool clicking = g_ipc != nullptr && g_ipc->TakeClick(click);
+
+    std::lock_guard<std::mutex> lock(g_keysGate);
+    if (g_windowChanged.exchange(false, std::memory_order_acq_rel))
+        Pump().WindowChanged(now);
+    Pump().Pass(std::move(wanted), age_ms, connected, seen, now);
+
+    if (clicking) Clicks().Begin(click, now);
+    Clicks().Pass(now);
+}
+
+// How long the pump may sleep: its usual interval, or less when a click's next step is due
+// sooner.
+DWORD PumpWaitMs() {
+    std::lock_guard<std::mutex> lock(g_keysGate);
+    const uint64_t due = Clicks().NextDueIn(GetTickCount64());
+    return due < kKeyPumpIntervalMs ? static_cast<DWORD>(due) : static_cast<DWORD>(kKeyPumpIntervalMs);
+}
+
+void KeyPumpLoop() {
+    HANDLE wake = g_keyPumpWake.load(std::memory_order_acquire);
+    while (!g_keyPumpStopping.load(std::memory_order_acquire)) {
+        const DWORD wait = PumpWaitMs();
+        if (wake != nullptr)
+            WaitForSingleObject(wake, wait);
+        else
+            Sleep(wait);
+        if (g_keyPumpStopping.load(std::memory_order_acquire)) break;
+
+        // An exception leaving this thread would end the game; a pass that fails is one late
+        // key, and the next pass tries again.
+        try {
+            PumpKeysOnce();
+        } catch (...) {
+        }
+    }
+}
+
+// Before the pipe starts, so its first set of keys already wakes the pump.
+void StartKeyPump() {
+    g_keyPumpWake.store(CreateEventW(nullptr, FALSE, FALSE, nullptr), std::memory_order_release);
+    if (g_ipc != nullptr) g_ipc->SetKeysListener(&WakeKeyPump);
+
+    try {
+        g_keyPumpStopping.store(false, std::memory_order_release);
+        g_keyPump = std::thread(&KeyPumpLoop);
+        LogLine("Held keys are pressed from a pump of their own, frames or none.");
+    } catch (...) {
+        LogLine("Could not start the key pump; no key will be held for the host.");
+    }
+}
+
+// Waits for the pump to leave, but not for ever: under the loader lock a thread cannot finish
+// exiting, and a wait without a bound would hang the game where it should merely unload.
+void StopKeyPump() {
+    g_keyPumpStopping.store(true, std::memory_order_release);
+    WakeKeyPump();
+
+    if (g_keyPump.joinable()) {
+        if (WaitForSingleObject(static_cast<HANDLE>(g_keyPump.native_handle()), 2000) == WAIT_OBJECT_0)
+            g_keyPump.join();
+        else {
+            LogLine("The key pump did not stop in time; leaving it to finish on its own.");
+            g_keyPump.detach();
+        }
+    }
+}
+
+// ---------------------------------------------------------------- playing on while minimized
+
+// For a player who asked to keep playing with the game minimized: minimizing it sends the
+// window off every screen instead - "parked" - and slows its frames, so it costs little, while
+// Unreal, which never sees a minimized window, goes on taking the keys held for plugins. It
+// comes back where it was the moment the player brings it back - from the taskbar, with
+// Alt+Tab, or by minimizing it again - and on its own if the switch goes off or the host goes
+// for good. native/docs/d3d12-overlay-design.md has the trade-offs.
+
+// The longest frame while parked, in milliseconds: about thirty frames a second, slow enough to
+// spare the machine and quick enough that a turn timed in tenths of a second still lands.
+constexpr DWORD kParkedFrameMs = 33;
+
+// How long the host may be gone before a parked window is put back and minimized for real: a
+// host restarting is back well within it.
+constexpr uint64_t kParkedHostGraceMs = 10000;
+
+std::mutex g_parkGate;
+RECT g_home{};  // under g_parkGate: where the window was before it was parked
+uint64_t g_parkHostGoneAt = 0;  // the pump's own; when the host or the switch went
+
+bool KeepPlayingMinimized() {
+    if (g_ipc == nullptr || !g_ipc->Connected()) return false;
+    std::shared_ptr<const State> latest = g_ipc->Latest();
+    return latest != nullptr && latest->keep_playing_minimized;
+}
+
+// An ordinary window with a title bar, as the game is when windowed, and shown. A full-screen
+// or maximized one minimizes as it always did.
+bool CanPark(HWND window) {
+    const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+    return (style & WS_CAPTION) == WS_CAPTION && IsIconic(window) == FALSE && IsZoomed(window) == FALSE;
+}
+
+// The window minimizing would have handed the keyboard to: the next one down that a player
+// could see and use - or the desktop, if there is none.
+HWND NextWindowToActivate(HWND window) {
+    for (HWND next = GetWindow(window, GW_HWNDNEXT); next != nullptr; next = GetWindow(next, GW_HWNDNEXT)) {
+        if (IsWindowVisible(next) == FALSE || IsIconic(next) != FALSE || GetWindow(next, GW_OWNER) != nullptr) continue;
+
+        const LONG_PTR extended = GetWindowLongPtrW(next, GWL_EXSTYLE);
+        if ((extended & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) != 0) continue;
+
+        // Windows on another virtual desktop, and suspended store apps, are "cloaked": there,
+        // but nowhere the player can see.
+        BOOL cloaked = FALSE;
+        if (SUCCEEDED(DwmGetWindowAttribute(next, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked) continue;
+
+        RECT rect{};
+        if (GetWindowRect(next, &rect) == FALSE || rect.right <= rect.left || rect.bottom <= rect.top) continue;
+        return next;
+    }
+
+    return GetShellWindow();
+}
+
+// Game thread only: called from the window procedure in place of minimizing.
+void Park(HWND window) {
+    RECT home{};
+    if (GetWindowRect(window, &home) == FALSE) return;
+
+    {
+        std::lock_guard<std::mutex> lock(g_parkGate);
+        g_home = home;
+    }
+    g_parked.store(true, std::memory_order_release);
+
+    // Clear of every monitor: past the left edge of the whole desktop by the window's own width,
+    // at its own height, and its size unchanged - a resize would have Unreal and the client lay
+    // their screens out again, and the client keeps where its panels sit by the window's size.
+    const int x = GetSystemMetrics(SM_XVIRTUALSCREEN) - (home.right - home.left) - 64;
+    HWND next = NextWindowToActivate(window);
+    SetWindowPos(window, HWND_BOTTOM, x, home.top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    if (next != nullptr) SetForegroundWindow(next);
+
+    LogFormat("Parked the game window off-screen in place of minimizing it (it was at %ld,%ld); frames are held to %u ms each until it comes back.",
+              home.left, home.top, static_cast<unsigned>(kParkedFrameMs));
+    WakeKeyPump();
+}
+
+// Puts a parked window back where it was. From the game's own thread it moves at once; from any
+// other the move is posted, so this never waits on a game thread that may be waiting on us.
+// With then_minimize the window is then minimized for real, which is what the player asked for
+// when it was parked.
+void Unpark(HWND window, bool on_window_thread, bool then_minimize, const char* why) {
+    if (window == nullptr || !g_parked.exchange(false, std::memory_order_acq_rel)) return;
+
+    RECT home{};
+    {
+        std::lock_guard<std::mutex> lock(g_parkGate);
+        home = g_home;
+    }
+
+    UINT flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+    if (!on_window_thread) flags |= SWP_ASYNCWINDOWPOS;
+    SetWindowPos(window, nullptr, home.left, home.top, 0, 0, flags);
+    if (then_minimize) ShowWindowAsync(window, SW_SHOWMINNOACTIVE);
+
+    LogFormat("Put the game window back at %ld,%ld%s: %s.", home.left, home.top, then_minimize ? " and minimized it" : "", why);
+    WakeKeyPump();
+}
+
+// The pump's look at a parked window: put back, and minimized for real, once the player has
+// switched keeping on off, or the host has been gone a while.
+void UpdateParking(uint64_t now_ms) {
+    if (!g_parked.load(std::memory_order_acquire)) {
+        g_parkHostGoneAt = 0;
+        return;
+    }
+
+    const bool connected = g_ipc != nullptr && g_ipc->Connected();
+    if (connected && KeepPlayingMinimized()) {
+        g_parkHostGoneAt = 0;
+        return;
+    }
+
+    if (connected) {
+        Unpark(g_window.load(std::memory_order_acquire), false, true, "keeping on while minimized was switched off");
+        return;
+    }
+
+    if (g_parkHostGoneAt == 0) g_parkHostGoneAt = now_ms;
+    if (now_ms - g_parkHostGoneAt >= kParkedHostGraceMs)
+        Unpark(g_window.load(std::memory_order_acquire), false, true, "the host has gone");
+}
+
+// Called from the Present hooks: while parked, no frame comes sooner than kParkedFrameMs after
+// the one before. Sleeping here holds up the render thread, and Unreal's game thread waits on
+// that, so the whole game slows - which is the point - while it keeps ticking, taking keys and
+// keeping its connection to the server.
+void ThrottleWhileParked() {
+    static std::atomic<int64_t> last_ms{0};
+    if (!g_parked.load(std::memory_order_relaxed)) return;
+
+    using namespace std::chrono;
+    const int64_t now = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    const int64_t due = last_ms.load(std::memory_order_relaxed) + kParkedFrameMs;
+    if (now < due && due - now <= static_cast<int64_t>(kParkedFrameMs))
+        Sleep(static_cast<DWORD>(due - now));
+    last_ms.store(duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
+}
+
+void NoteWindowChanged() {
+    g_windowChanged.store(true, std::memory_order_release);
+    WakeKeyPump();
+}
 
 template <typename T>
 void Release(T*& object) {
@@ -210,10 +610,69 @@ LRESULT CALLBACK OverlayWndProc(HWND window, UINT message, WPARAM wParam, LPARAM
     if (original == nullptr)
         return DefWindowProcW(window, message, wParam, lParam);
 
+    switch (message) {
+        case WM_SYSCOMMAND:
+            if ((wParam & 0xFFF0) == SC_MINIMIZE) {
+                // Minimizing a parked window - the taskbar button of the window in front - is the
+                // player reaching for a window they cannot see: it comes back.
+                if (g_parked.load(std::memory_order_acquire)) {
+                    Unpark(window, true, false, "the player asked for it");
+                    SetForegroundWindow(window);
+                    return 0;
+                }
+
+                // Not once unloading has begun: nothing would be left to bring it back.
+                if (g_installed.load(std::memory_order_acquire) && KeepPlayingMinimized()) {
+                    if (CanPark(window)) {
+                        Park(window);
+                        return 0;
+                    }
+                    LogLine("Minimizing the game window as usual: it is full-screen or maximized, and only a window with a title bar is parked.");
+                }
+            }
+            break;
+
+        case WM_ACTIVATE:
+            // Brought back from the taskbar or with Alt+Tab: back where it was, before Unreal
+            // sees the activation and confines the cursor to wherever the window is.
+            if (LOWORD(wParam) != WA_INACTIVE && g_parked.load(std::memory_order_acquire))
+                Unpark(window, true, false, "the player brought it back");
+            NoteWindowChanged();
+            break;
+
+        case WM_ACTIVATEAPP:
+        case WM_SETFOCUS:
+        case WM_KILLFOCUS:
+            NoteWindowChanged();
+            break;
+
+        case WM_SIZE:
+            if (wParam == SIZE_MINIMIZED || wParam == SIZE_RESTORED || wParam == SIZE_MAXIMIZED)
+                NoteWindowChanged();
+            break;
+
+        case WM_CLOSE:
+        case WM_QUERYENDSESSION:
+        case WM_ENDSESSION:
+        case WM_DESTROY:
+            // A game that keeps where its window was must not keep it off-screen.
+            if (g_parked.load(std::memory_order_acquire))
+                Unpark(window, true, false, "the game is closing");
+            break;
+
+        default:
+            break;
+    }
+
     // A key held for the host goes to the game whatever the overlay's windows want: they
     // would otherwise take it whenever one of them had the keyboard.
     if (IsInjectedKey(message, lParam))
         return CallWindowProcW(original, window, message, wParam, lParam);
+
+    // So does a click made for the host, its marker taken off: an overlay window drawn where it
+    // lands - Virindi Tank's, over the character list - would otherwise take it.
+    if (IsInjectedMouse(message, wParam))
+        return CallWindowProcW(original, window, message, wParam & ~kInjectedMouseMask, lParam);
 
     // A hotkey window waiting for a key: the next key pressed that is not a modifier goes to
     // it and not to the game - Escape to cancel - once for each snapshot that asks.
@@ -334,19 +793,6 @@ LRESULT CALLBACK OverlayWndProc(HWND window, UINT message, WPARAM wParam, LPARAM
 
 // ---------------------------------------------------------------- lifetime
 
-// Releases everything that depends on the swap chain's buffers. Called before the game's
-// own resize, because a reference we still hold makes that resize fail.
-void ReleaseFrames() {
-    Renderer& r = g_renderer;
-
-    for (Frame& frame : r.frames) {
-        Release(frame.backBuffer);
-        Release(frame.allocator);
-    }
-
-    r.frames.clear();
-}
-
 void WaitForGpu() {
     Renderer& r = g_renderer;
     if (r.fence == nullptr || r.fenceEvent == nullptr) return;
@@ -363,6 +809,12 @@ void WaitForGpu() {
     }
 }
 
+void ReleaseSlots() {
+    Renderer& r = g_renderer;
+    for (Slot& slot : r.slots) Release(slot.allocator);
+    r.slots.clear();
+}
+
 void Teardown() {
     std::lock_guard<std::mutex> lock(g_rendererGate);
     Renderer& r = g_renderer;
@@ -374,13 +826,13 @@ void Teardown() {
     if (ImGui::GetCurrentContext() != nullptr) {
         // The backend frees the GPU side of our textures as it shuts down; their CPU side
         // is ours to free after that and before the context they are registered with goes.
-        ImGui_ImplDX12_Shutdown();
+        if (r.pipelineReady) ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ReleaseAllTextures();
         ImGui::DestroyContext();
     }
 
-    ReleaseFrames();
+    ReleaseSlots();
     Release(r.commandList);
     Release(r.fence);
     Release(r.srvHeap);
@@ -393,14 +845,38 @@ void Teardown() {
     }
 
     r.srvUsed.clear();
+    r.pipelineReady = false;
     r.ready = false;
     r.failed = false;
 }
 
-// Builds everything that depends on the swap chain. Returns false once and then stays
-// false: a renderer that cannot be set up will not become able to on the next frame, and
-// retrying every frame would fill the log at sixty lines a second.
-bool Prepare(IDXGISwapChain3* swapChain) {
+// What ImGui's D3D12 backend is told: the device, the queue it uploads textures on, the turn of
+// frames, our texture heap, and the format of the back buffers its pipeline draws into.
+ImGui_ImplDX12_InitInfo PipelineInfo(DXGI_FORMAT format) {
+    Renderer& r = g_renderer;
+    ImGui_ImplDX12_InitInfo info{};
+    info.Device = r.device;
+    info.CommandQueue = g_queue.load(std::memory_order_acquire);
+    info.NumFramesInFlight = static_cast<int>(r.slots.size());
+
+    // Read from the swap chain rather than assumed: the back buffer format is a cvar
+    // in this client and can be a float format.
+    info.RTVFormat = format;
+
+    // No depth buffer is bound, so the pipeline state must be built without one or
+    // the draw is invalid.
+    info.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    info.SrvDescriptorHeap = r.srvHeap;
+    info.SrvDescriptorAllocFn = &AllocateSrv;
+    info.SrvDescriptorFreeFn = &FreeSrv;
+    return info;
+}
+
+// Builds everything the overlay draws with, once. Returns false once and then stays false: a
+// renderer that cannot be set up will not become able to on the next frame, and retrying every
+// frame would fill the log at sixty lines a second.
+bool Prepare(IDXGISwapChain3* swapChain, const DXGI_SWAP_CHAIN_DESC& desc) {
     Renderer& r = g_renderer;
 
     if (r.ready) return true;
@@ -413,14 +889,7 @@ bool Prepare(IDXGISwapChain3* swapChain) {
         return false;
     }
 
-    DXGI_SWAP_CHAIN_DESC desc{};
-    if (FAILED(swapChain->GetDesc(&desc))) {
-        LogLine("Could not read the swap chain description.");
-        r.failed = true;
-        return false;
-    }
-
-    if (FAILED(swapChain->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&r.device)))) {
+    if (r.device == nullptr && FAILED(swapChain->GetDevice(__uuidof(ID3D12Device), reinterpret_cast<void**>(&r.device)))) {
         LogLine("The swap chain is not a D3D12 swap chain.");
         r.failed = true;
         return false;
@@ -443,11 +912,13 @@ bool Prepare(IDXGISwapChain3* swapChain) {
         }
     }
 
-    UINT buffers = desc.BufferCount == 0 ? 2 : desc.BufferCount;
+    // As many frames in flight as the game has buffers when the overlay starts - three, for this
+    // client - and that many from then on.
+    const UINT slots = std::clamp<UINT>(desc.BufferCount, 2, 4);
 
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc{};
     rtvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvDesc.NumDescriptors = buffers;
+    rtvDesc.NumDescriptors = slots;
     rtvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
     D3D12_DESCRIPTOR_HEAP_DESC srvDesc{};
@@ -467,148 +938,235 @@ bool Prepare(IDXGISwapChain3* swapChain) {
     UINT rtvStride = r.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     D3D12_CPU_DESCRIPTOR_HANDLE rtvStart = r.rtvHeap->GetCPUDescriptorHandleForHeapStart();
 
-    r.frames.resize(buffers);
-
-    for (UINT i = 0; i < buffers; ++i) {
-        Frame& frame = r.frames[i];
-        frame.rtv.ptr = rtvStart.ptr + i * rtvStride;
-
-        if (FAILED(swapChain->GetBuffer(i, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&frame.backBuffer)))) {
-            LogFormat("Could not get back buffer %u.", i);
-            r.failed = true;
-            return false;
-        }
-
-        r.device->CreateRenderTargetView(frame.backBuffer, nullptr, frame.rtv);
+    r.slots.resize(slots);
+    for (UINT i = 0; i < slots; ++i) {
+        Slot& slot = r.slots[i];
+        slot.rtv.ptr = rtvStart.ptr + i * rtvStride;
 
         if (FAILED(r.device->CreateCommandAllocator(
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
                 __uuidof(ID3D12CommandAllocator),
-                reinterpret_cast<void**>(&frame.allocator)))) {
+                reinterpret_cast<void**>(&slot.allocator)))) {
             LogLine("Could not create a command allocator.");
             r.failed = true;
             return false;
         }
     }
 
-    if (r.commandList == nullptr) {
-        if (FAILED(r.device->CreateCommandList(
-                0,
-                D3D12_COMMAND_LIST_TYPE_DIRECT,
-                r.frames[0].allocator,
-                nullptr,
-                __uuidof(ID3D12GraphicsCommandList),
-                reinterpret_cast<void**>(&r.commandList)))) {
-            LogLine("Could not create a command list.");
-            r.failed = true;
-            return false;
-        }
-
-        r.commandList->Close();
+    if (FAILED(r.device->CreateCommandList(
+            0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            r.slots[0].allocator,
+            nullptr,
+            __uuidof(ID3D12GraphicsCommandList),
+            reinterpret_cast<void**>(&r.commandList)))) {
+        LogLine("Could not create a command list.");
+        r.failed = true;
+        return false;
     }
 
-    if (r.fence == nullptr) {
-        if (FAILED(r.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&r.fence)))) {
-            LogLine("Could not create a fence.");
-            r.failed = true;
-            return false;
-        }
+    r.commandList->Close();
 
-        r.fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (FAILED(r.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence), reinterpret_cast<void**>(&r.fence)))) {
+        LogLine("Could not create a fence.");
+        r.failed = true;
+        return false;
     }
+
+    r.fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
     // The window comes from the swap chain rather than from a search, so a client with
     // more than one window cannot be got wrong.
-    if (r.window == nullptr) {
+    {
         DXGI_SWAP_CHAIN_DESC1 desc1{};
         if (SUCCEEDED(swapChain->GetDesc1(&desc1)))
             swapChain->GetHwnd(&r.window);
 
         if (r.window == nullptr)
             r.window = desc.OutputWindow;
+
+        g_window.store(r.window, std::memory_order_release);
     }
 
-    if (ImGui::GetCurrentContext() == nullptr) {
-        ImGui::CreateContext();
+    ImGui::CreateContext();
 
-        // Where the player left the bar and each window, kept beside this DLL - never in the
-        // game's folder - so a reload does not put everything back in the corner. Static,
-        // because ImGui keeps the pointer for the context's life.
-        static std::string ini;
-        const std::wstring folder = DllDirectory();
-        ini.clear();
-        if (!folder.empty()) {
-            const std::wstring path = folder + L"ACUnrealOverlay.ini";
-            const int needed = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            if (needed > 1) {
-                ini.assign(static_cast<size_t>(needed), '\0');
-                WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, ini.data(), needed, nullptr, nullptr);
-                ini.resize(static_cast<size_t>(needed - 1));
-            }
+    // Where the player left the bar and each window, kept beside this DLL - never in the
+    // game's folder - so a reload does not put everything back in the corner. Static,
+    // because ImGui keeps the pointer for the context's life.
+    static std::string ini;
+    const std::wstring folder = DllDirectory();
+    ini.clear();
+    if (!folder.empty()) {
+        const std::wstring path = folder + L"ACUnrealOverlay.ini";
+        const int needed = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (needed > 1) {
+            ini.assign(static_cast<size_t>(needed), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, ini.data(), needed, nullptr, nullptr);
+            ini.resize(static_cast<size_t>(needed - 1));
         }
-        ImGui::GetIO().IniFilename = ini.empty() ? nullptr : ini.c_str();
-
-        // Each window's theme, pin and alpha, kept in the same file - registered before the
-        // first frame, which is when ImGui reads it.
-        RegisterDecalSettings();
-        RegisterOverlaySettings();
-
-        // The game owns the cursor. The Win32 backend would otherwise set its own arrow on
-        // every WM_SETCURSOR and every frame, the game would set its cursor straight back,
-        // and the pointer blinked between the two whenever it was over one of our windows.
-        // Decal drew over the game's cursor rather than replacing it, and so do we - at the
-        // cost of the resize arrows at window edges, which the game's cursor cannot show.
-        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
-
-        ImGui::StyleColorsDark();
-
-        // ImGui's own font first, so it stays the default for everything not drawn in the
-        // Decal look; then the faces the Decal theme names.
-        ImGui::GetIO().Fonts->AddFontDefault();
-        if (!LoadDecalFonts(ImGui::GetIO().Fonts))
-            LogLine("Times New Roman was not found in the Windows fonts folder; Decal views will use ImGui's font.");
-
-        if (!ImGui_ImplWin32_Init(r.window)) {
-            LogLine("The win32 backend refused the window.");
-            r.failed = true;
-            return false;
-        }
-
-        ImGui_ImplDX12_InitInfo info{};
-        info.Device = r.device;
-        info.CommandQueue = queue;
-        info.NumFramesInFlight = static_cast<int>(buffers);
-
-        // Read from the swap chain rather than assumed: the back buffer format is a cvar
-        // in this client and can be a float format.
-        info.RTVFormat = desc.BufferDesc.Format;
-
-        // No depth buffer is bound, so the pipeline state must be built without one or
-        // the draw is invalid.
-        info.DSVFormat = DXGI_FORMAT_UNKNOWN;
-
-        info.SrvDescriptorHeap = r.srvHeap;
-        info.SrvDescriptorAllocFn = &AllocateSrv;
-        info.SrvDescriptorFreeFn = &FreeSrv;
-
-        if (!ImGui_ImplDX12_Init(&info)) {
-            LogLine("The D3D12 backend refused to initialise.");
-            r.failed = true;
-            return false;
-        }
-
-        r.originalWndProc = reinterpret_cast<WNDPROC>(
-            SetWindowLongPtrW(r.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&OverlayWndProc)));
-
-        LogFormat(
-            "Renderer ready: %u buffers, format %d, window 0x%p.",
-            buffers,
-            static_cast<int>(desc.BufferDesc.Format),
-            static_cast<void*>(r.window));
     }
+    ImGui::GetIO().IniFilename = ini.empty() ? nullptr : ini.c_str();
+
+    // Each window's theme, pin and alpha, kept in the same file - registered before the
+    // first frame, which is when ImGui reads it.
+    RegisterDecalSettings();
+    RegisterOverlaySettings();
+
+    // The game owns the cursor. The Win32 backend would otherwise set its own arrow on
+    // every WM_SETCURSOR and every frame, the game would set its cursor straight back,
+    // and the pointer blinked between the two whenever it was over one of our windows.
+    // Decal drew over the game's cursor rather than replacing it, and so do we - at the
+    // cost of the resize arrows at window edges, which the game's cursor cannot show.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
+    ImGui::StyleColorsDark();
+
+    // ImGui's own font first, so it stays the default for everything not drawn in the
+    // Decal look; then the faces the Decal theme names.
+    ImGui::GetIO().Fonts->AddFontDefault();
+    if (!LoadDecalFonts(ImGui::GetIO().Fonts))
+        LogLine("Times New Roman was not found in the Windows fonts folder; Decal views will use ImGui's font.");
+
+    if (!ImGui_ImplWin32_Init(r.window)) {
+        LogLine("The win32 backend refused the window.");
+        r.failed = true;
+        return false;
+    }
+
+    ImGui_ImplDX12_InitInfo info = PipelineInfo(desc.BufferDesc.Format);
+    if (!ImGui_ImplDX12_Init(&info)) {
+        LogLine("The D3D12 backend refused to initialise.");
+        r.failed = true;
+        return false;
+    }
+    r.pipelineFormat = desc.BufferDesc.Format;
+    r.pipelineReady = true;
+
+    r.originalWndProc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(r.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&OverlayWndProc)));
+
+    LogFormat(
+        "Renderer ready: %u buffers, format %d, window 0x%p; %u frames in flight.",
+        desc.BufferCount,
+        static_cast<int>(desc.BufferDesc.Format),
+        static_cast<void*>(r.window),
+        slots);
 
     r.ready = true;
     return true;
+}
+
+// The game's resizes and swap-chain changes, said up to a point: dragging the window's frame
+// resizes on every step of the drag.
+constexpr int kResizeLines = 60;
+std::atomic<int> g_resizeLines{0};
+
+bool MayLogResize() {
+    const int said = g_resizeLines.fetch_add(1, std::memory_order_relaxed);
+    if (said == kResizeLines) LogLine("Further resizes of the game's back buffers are not logged this session.");
+    return said < kResizeLines;
+}
+
+Target TargetOf(const void* chain, const DXGI_SWAP_CHAIN_DESC& desc) {
+    Target target;
+    target.chain = chain;
+    target.width = desc.BufferDesc.Width;
+    target.height = desc.BufferDesc.Height;
+    target.buffers = desc.BufferCount;
+    target.format = desc.BufferDesc.Format;
+    return target;
+}
+
+// Notes the back buffers the game presents, and says when they changed other than by a resize
+// the hooks saw - a new swap chain for the window, or a path not hooked.
+void NoteTarget(const void* chain, const DXGI_SWAP_CHAIN_DESC& desc) {
+    Renderer& r = g_renderer;
+    const Target now = TargetOf(chain, desc);
+    const Target& was = r.target;
+
+    const bool resized = now.width != was.width || now.height != was.height || now.buffers != was.buffers || now.format != was.format;
+    if (was.chain != nullptr && now.chain != was.chain) {
+        if (MayLogResize())
+            LogFormat("The game presents through a new swap chain for its window: %ux%u, %u buffers, format %d. "
+                      "The overlay draws into it as into the last; nothing of its own needed making again.",
+                      now.width, now.height, now.buffers, static_cast<int>(now.format));
+    } else if (was.chain != nullptr && resized) {
+        if (MayLogResize())
+            LogFormat("The game's back buffers changed from %ux%u to %ux%u (%u buffers, format %d) without a resize the overlay saw.",
+                      was.width, was.height, now.width, now.height, now.buffers, static_cast<int>(now.format));
+    }
+
+    r.target = now;
+}
+
+// Builds ImGui's pipeline again for back buffers of another format - as HDR gives: drawing with
+// a pipeline built for one format into buffers of another is invalid, and may cost the device.
+// The fonts and images go with it and are uploaded again on the next frame.
+bool RebuildPipeline(DXGI_FORMAT format) {
+    Renderer& r = g_renderer;
+    WaitForGpu();
+
+    const DXGI_FORMAT was = r.pipelineFormat;
+    if (r.pipelineReady) ImGui_ImplDX12_Shutdown();
+    r.pipelineReady = false;
+
+    ImGui_ImplDX12_InitInfo info = PipelineInfo(format);
+    if (!ImGui_ImplDX12_Init(&info)) {
+        LogFormat("The game's back buffers are now format %d, and the D3D12 backend refused to draw into them. No overlay until the game restarts.",
+                  static_cast<int>(format));
+        r.failed = true;
+        return false;
+    }
+
+    r.pipelineFormat = format;
+    r.pipelineReady = true;
+    LogFormat("The game's back buffers changed format from %d to %d; rebuilt the overlay's pipeline for it, and its fonts and images are uploaded again.",
+              static_cast<int>(was), static_cast<int>(format));
+    return true;
+}
+
+// Whether a frame is drawn at all: not while the game is minimized, nor while its window or its
+// back buffers are too small to hold a window - Unreal resizes them to 8 x 8 when minimized. Such
+// a frame does not reach ImGui, so nothing in it can move a window or have one saved where it
+// was put: a hudified window kept on a screen of no size went to its corner, and was saved there.
+bool Drawable(const DXGI_SWAP_CHAIN_DESC& desc) {
+    Renderer& r = g_renderer;
+
+    RECT client{};
+    const bool iconic = IsIconic(r.window) != FALSE;
+    if (!iconic) GetClientRect(r.window, &client);
+    const int clientWidth = client.right - client.left;
+    const int clientHeight = client.bottom - client.top;
+
+    const bool drawable = !iconic && DisplayUsable(static_cast<float>(clientWidth), static_cast<float>(clientHeight)) &&
+                          DisplayUsable(static_cast<float>(desc.BufferDesc.Width), static_cast<float>(desc.BufferDesc.Height));
+
+    if (drawable != r.drawing) {
+        r.drawing = drawable;
+        if (drawable) r.reportNextFrame = true;
+        static int said = 0;
+        if (said < 200) {
+            ++said;
+            if (drawable)
+                LogFormat("Drawing again: the game window is %dx%d, its back buffers %ux%u.", clientWidth, clientHeight,
+                          desc.BufferDesc.Width, desc.BufferDesc.Height);
+            else
+                LogFormat("Not drawing while the game window is %s (window %dx%d, back buffers %ux%u); the overlay's windows stay where they are.",
+                          iconic ? "minimized" : "too small", clientWidth, clientHeight, desc.BufferDesc.Width, desc.BufferDesc.Height);
+        }
+    }
+
+    return drawable;
+}
+
+// A frame the overlay meant to draw and could not, said - up to a point, since one cause fails
+// every frame. Such a frame used to go unrecorded, and an overlay that drew nothing said nothing.
+void NoteUndrawn(const char* step, HRESULT result) {
+    static int said = 0;
+    if (said >= 20) return;
+    ++said;
+    LogFormat("Did not draw a frame: %s failed (0x%08lX).%s", step, static_cast<unsigned long>(result),
+              said == 20 ? " No more of these are logged this session." : "");
 }
 
 // ---------------------------------------------------------------- drawing
@@ -616,18 +1174,45 @@ bool Prepare(IDXGISwapChain3* swapChain) {
 void DrawFrame(IDXGISwapChain3* swapChain) {
     std::lock_guard<std::mutex> lock(g_rendererGate);
 
-    if (!Prepare(swapChain))
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (FAILED(swapChain->GetDesc(&desc)))
+        return;
+
+    if (!Prepare(swapChain, desc))
         return;
 
     Renderer& r = g_renderer;
 
+    // The overlay belongs to the game's window. A swap chain for any other - a splash screen, a
+    // second viewport - is left to itself.
+    if (desc.OutputWindow != nullptr && desc.OutputWindow != r.window) {
+        static bool said = false;
+        if (!said) {
+            said = true;
+            LogFormat("A swap chain for another window (0x%p) presents; the overlay draws only on the game's.",
+                      static_cast<void*>(desc.OutputWindow));
+        }
+        return;
+    }
+
+    NoteTarget(swapChain, desc);
+
+    // The pipe, and the pump that holds keys for it, start with the first frame the renderer is
+    // ready for, and run on their own threads from then on, frames or none.
     std::call_once(g_ipcOnce, [] {
-        g_ipc = new (std::nothrow) Ipc();
+        g_ipc = new (std::nothrow) Ipc(kPipeName);
         if (g_ipc != nullptr) {
+            StartKeyPump();
             g_ipc->Start();
             LogLine("Listening for the host on the overlay pipe.");
         }
     });
+
+    if (!Drawable(desc))
+        return;
+
+    if (desc.BufferDesc.Format != r.pipelineFormat && !RebuildPipeline(desc.BufferDesc.Format))
+        return;
 
     bool visible = g_visible.load(std::memory_order_relaxed);
 
@@ -645,13 +1230,8 @@ void DrawFrame(IDXGISwapChain3* swapChain) {
                     std::to_string(TextureCount() - before) + " new.");
         }
 
-        // The keys the host wants held, unless it has gone quiet - then none.
-        std::vector<uint16_t> wanted;
-        uint64_t age_ms = 0;
-        g_ipc->WantedKeys(wanted, age_ms);
-        if (!g_ipc->Connected() || age_ms > kHeldKeysStaleMs)
-            wanted.clear();
-        Keys().Apply(wanted);
+        // The keys the host wants held are not pressed here: the key pump does that, on its own
+        // thread, because a minimized game presents few frames or none.
     }
 
     ImGui_ImplDX12_NewFrame();
@@ -712,29 +1292,43 @@ void DrawFrame(IDXGISwapChain3* swapChain) {
         }
     }
 
-    UINT index = swapChain->GetCurrentBackBufferIndex();
-    if (index >= r.frames.size())
-        return;
-
-    Frame& frame = r.frames[index];
+    Slot& slot = r.slots[r.frameCount % r.slots.size()];
 
     // The backend reuses its vertex and index buffers with no fence of its own, so
     // without this wait a frame can overwrite geometry the GPU is still reading.
-    if (r.fence->GetCompletedValue() < frame.fenceValue && r.fenceEvent != nullptr) {
-        if (SUCCEEDED(r.fence->SetEventOnCompletion(frame.fenceValue, r.fenceEvent)))
+    if (r.fence->GetCompletedValue() < slot.fenceValue && r.fenceEvent != nullptr) {
+        if (SUCCEEDED(r.fence->SetEventOnCompletion(slot.fenceValue, r.fenceEvent)))
             WaitForSingleObject(r.fenceEvent, 1000);
     }
 
-    if (FAILED(frame.allocator->Reset()))
+    HRESULT step = slot.allocator->Reset();
+    if (FAILED(step)) {
+        NoteUndrawn("resetting its command allocator", step);
         return;
+    }
 
-    if (FAILED(r.commandList->Reset(frame.allocator, nullptr)))
+    // The buffer the game is about to present, taken for this frame alone.
+    const UINT index = swapChain->GetCurrentBackBufferIndex();
+    ID3D12Resource* backBuffer = nullptr;
+    step = swapChain->GetBuffer(index, __uuidof(ID3D12Resource), reinterpret_cast<void**>(&backBuffer));
+    if (FAILED(step)) {
+        NoteUndrawn("taking the back buffer", step);
         return;
+    }
+
+    step = r.commandList->Reset(slot.allocator, nullptr);
+    if (FAILED(step)) {
+        NoteUndrawn("resetting its command list", step);
+        backBuffer->Release();
+        return;
+    }
+
+    r.device->CreateRenderTargetView(backBuffer, nullptr, slot.rtv);
 
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-    barrier.Transition.pResource = frame.backBuffer;
+    barrier.Transition.pResource = backBuffer;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 
     // The game has just finished with this buffer and is about to present it, so it is in
@@ -744,10 +1338,11 @@ void DrawFrame(IDXGISwapChain3* swapChain) {
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     r.commandList->ResourceBarrier(1, &barrier);
 
-    r.commandList->OMSetRenderTargets(1, &frame.rtv, FALSE, nullptr);
+    r.commandList->OMSetRenderTargets(1, &slot.rtv, FALSE, nullptr);
     r.commandList->SetDescriptorHeaps(1, &r.srvHeap);
 
-    ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), r.commandList);
+    ImDrawData* drawData = ImGui::GetDrawData();
+    ImGui_ImplDX12_RenderDrawData(drawData, r.commandList);
 
     // Frees textures the backend has now finished destroying - images the host replaced.
     CollectRetiredTextures();
@@ -756,18 +1351,41 @@ void DrawFrame(IDXGISwapChain3* swapChain) {
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
     r.commandList->ResourceBarrier(1, &barrier);
 
-    if (FAILED(r.commandList->Close()))
-        return;
-
+    step = r.commandList->Close();
     ID3D12CommandQueue* queue = g_queue.load(std::memory_order_acquire);
-    if (queue == nullptr)
+    if (FAILED(step) || queue == nullptr) {
+        NoteUndrawn(queue == nullptr ? "finding the game's queue" : "closing its command list", step);
+        backBuffer->Release();
         return;
+    }
 
     ID3D12CommandList* lists[] = { r.commandList };
     queue->ExecuteCommandLists(1, lists);
 
-    frame.fenceValue = ++r.fenceValue;
-    queue->Signal(r.fence, frame.fenceValue);
+    slot.fenceValue = ++r.fenceValue;
+    queue->Signal(r.fence, slot.fenceValue);
+    ++r.frameCount;
+
+    // The first frame drawn after one passed over, said: what ImGui drew, and where it went. If
+    // the player sees nothing after this line, the frame went somewhere they do not look.
+    if (r.reportNextFrame) {
+        r.reportNextFrame = false;
+        static int said = 0;
+        if (said < 100) {
+            ++said;
+            LogFormat("Drew a frame, the first %s: %d windows, %d vertices, at %.0fx%.0f, into back buffer %u (%ux%u, format %d) "
+                      "of swap chain 0x%p, on queue 0x%p.",
+                      r.frameCount == 1 ? "of the session" : "since the window was minimized or too small",
+                      drawData != nullptr ? drawData->CmdListsCount : 0, drawData != nullptr ? drawData->TotalVtxCount : 0,
+                      drawData != nullptr ? drawData->DisplaySize.x : 0.0f, drawData != nullptr ? drawData->DisplaySize.y : 0.0f,
+                      index, desc.BufferDesc.Width, desc.BufferDesc.Height, static_cast<int>(desc.BufferDesc.Format),
+                      static_cast<void*>(swapChain), static_cast<void*>(queue));
+        }
+    }
+
+    // Let go at once: the swap chain keeps its buffer alive, and the game waits for the GPU -
+    // as the resize hooks below do - before it resizes or lets go of its swap chain.
+    backBuffer->Release();
 }
 
 // Logged once so the design note's open question - Present or Present1 - is answered by
@@ -781,7 +1399,14 @@ void NotePresentPath(const char* which) {
 
 HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags) {
     InFlight guard;
+
+    // A test present shows nothing: an engine asks with one whether its window can be seen, as
+    // around a minimize. Nothing is drawn into it, and it is not counted as a frame.
+    if ((flags & DXGI_PRESENT_TEST) != 0)
+        return g_originalPresent(swapChain, syncInterval, flags);
+
     NotePresentPath("Present");
+    g_frames.fetch_add(1, std::memory_order_relaxed);
 
     IDXGISwapChain3* chain3 = nullptr;
     if (SUCCEEDED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void**>(&chain3)))) {
@@ -789,6 +1414,7 @@ HRESULT STDMETHODCALLTYPE PresentDetour(IDXGISwapChain* swapChain, UINT syncInte
         chain3->Release();
     }
 
+    ThrottleWhileParked();
     return g_originalPresent(swapChain, syncInterval, flags);
 }
 
@@ -798,7 +1424,12 @@ HRESULT STDMETHODCALLTYPE Present1Detour(
     UINT flags,
     const DXGI_PRESENT_PARAMETERS* parameters) {
     InFlight guard;
+
+    if ((flags & DXGI_PRESENT_TEST) != 0)
+        return g_originalPresent1(swapChain, syncInterval, flags, parameters);
+
     NotePresentPath("Present1");
+    g_frames.fetch_add(1, std::memory_order_relaxed);
 
     IDXGISwapChain3* chain3 = nullptr;
     if (SUCCEEDED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void**>(&chain3)))) {
@@ -806,9 +1437,57 @@ HRESULT STDMETHODCALLTYPE Present1Detour(
         chain3->Release();
     }
 
+    ThrottleWhileParked();
     return g_originalPresent1(swapChain, syncInterval, flags, parameters);
 }
 
+// After the game's resize: said, with the sizes before and after, and noted, so the next frame
+// does not take the change for one the hooks missed.
+void AfterResize(IDXGISwapChain* swapChain, const char* how, const DXGI_SWAP_CHAIN_DESC& before, UINT width, UINT height, HRESULT result) {
+    DXGI_SWAP_CHAIN_DESC after{};
+    swapChain->GetDesc(&after);
+
+    if (MayLogResize()) {
+        if (FAILED(result))
+            LogFormat("The game's %s from %ux%u to %ux%u failed (0x%08lX); its buffers stay %ux%u.", how, before.BufferDesc.Width,
+                      before.BufferDesc.Height, width, height, static_cast<unsigned long>(result), after.BufferDesc.Width,
+                      after.BufferDesc.Height);
+        else
+            LogFormat("The game resized its back buffers with %s from %ux%u to %ux%u (%u buffers, format %d). The overlay holds none of "
+                      "them between frames and kept its texture heap, pipeline, fonts and images; nothing of its own was made again.",
+                      how, before.BufferDesc.Width, before.BufferDesc.Height, after.BufferDesc.Width, after.BufferDesc.Height,
+                      after.BufferCount, static_cast<int>(after.BufferDesc.Format));
+    }
+
+    IDXGISwapChain3* chain3 = nullptr;
+    if (SUCCEEDED(swapChain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void**>(&chain3)))) {
+        std::lock_guard<std::mutex> lock(g_rendererGate);
+        if (g_renderer.target.chain == chain3 || g_renderer.target.chain == nullptr)
+            g_renderer.target = TargetOf(chain3, after);
+        chain3->Release();
+    }
+}
+
+// The game's resize, `resize`, made under the renderer's lock once the GPU is done with every
+// frame the overlay drew into the old buffers: no frame of the overlay's can take one of them
+// while they are resized, which would fail the resize. The overlay holds none of them otherwise,
+// so there is nothing to let go; its view of the new ones is made as it draws, and its texture
+// heap, pipeline, fonts and images are all kept.
+template <typename Resize>
+HRESULT Resized(IDXGISwapChain* swapChain, const char* how, UINT width, UINT height, Resize resize) {
+    DXGI_SWAP_CHAIN_DESC before{};
+    swapChain->GetDesc(&before);
+
+    HRESULT result = E_FAIL;
+    {
+        std::lock_guard<std::mutex> lock(g_rendererGate);
+        WaitForGpu();
+        result = resize();
+    }
+
+    AfterResize(swapChain, how, before, width, height, result);
+    return result;
+}
 HRESULT STDMETHODCALLTYPE ResizeBuffersDetour(
     IDXGISwapChain* swapChain,
     UINT bufferCount,
@@ -818,14 +1497,8 @@ HRESULT STDMETHODCALLTYPE ResizeBuffersDetour(
     UINT flags) {
     InFlight guard;
 
-    {
-        std::lock_guard<std::mutex> lock(g_rendererGate);
-        WaitForGpu();
-        ReleaseFrames();
-        g_renderer.ready = false;
-    }
-
-    return g_originalResizeBuffers(swapChain, bufferCount, width, height, format, flags);
+    return Resized(swapChain, "ResizeBuffers", width, height,
+                   [&] { return g_originalResizeBuffers(swapChain, bufferCount, width, height, format, flags); });
 }
 
 HRESULT STDMETHODCALLTYPE ResizeBuffers1Detour(
@@ -847,20 +1520,17 @@ HRESULT STDMETHODCALLTYPE ResizeBuffers1Detour(
             ID3D12CommandQueue* previous = g_queue.exchange(queue, std::memory_order_acq_rel);
             if (previous != queue)
                 LogLine("Took the present queue from ResizeBuffers1.");
+            else
+                queue->Release();  // already held: one reference is enough
 
-            // Not released: the pointer is kept for the life of the session, and the
-            // reference is what stops it going away underneath us.
+            // Otherwise not released: the pointer is kept for the life of the session, and
+            // the reference is what stops it going away underneath us.
         }
     }
 
-    {
-        std::lock_guard<std::mutex> lock(g_rendererGate);
-        WaitForGpu();
-        ReleaseFrames();
-        g_renderer.ready = false;
-    }
-
-    return g_originalResizeBuffers1(swapChain, bufferCount, width, height, format, flags, nodeMasks, presentQueues);
+    return Resized(swapChain, "ResizeBuffers1", width, height, [&] {
+        return g_originalResizeBuffers1(swapChain, bufferCount, width, height, format, flags, nodeMasks, presentQueues);
+    });
 }
 
 void STDMETHODCALLTYPE ExecuteCommandListsDetour(
@@ -1035,6 +1705,16 @@ void Uninstall() {
     if (!g_installed.exchange(false, std::memory_order_acq_rel))
         return;
 
+    // The key pump stops before anything it reads goes, and nothing stays held down once the
+    // overlay has gone. A window parked off-screen goes back where it was, minimized as the
+    // player asked when it was parked.
+    StopKeyPump();
+    {
+        std::lock_guard<std::mutex> lock(g_keysGate);
+        Keys().ReleaseAll();
+    }
+    Unpark(g_window.load(std::memory_order_acquire), false, true, "the overlay is unloading");
+
     // The window procedure goes first, and before the drain, because it is the entry
     // point most likely to be executing: the client pumps messages continuously, and a
     // call already inside it when the DLL is unmapped is an access violation rather than
@@ -1042,9 +1722,6 @@ void Uninstall() {
     {
         std::lock_guard<std::mutex> lock(g_rendererGate);
         Renderer& r = g_renderer;
-
-        // Nothing stays held down once the overlay has gone.
-        Keys().ReleaseAll();
 
         if (r.originalWndProc != nullptr && r.window != nullptr) {
             SetWindowLongPtrW(r.window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(r.originalWndProc));

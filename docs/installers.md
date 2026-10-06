@@ -35,8 +35,11 @@ and for the overlay the Visual Studio C++ build tools and `native\third_party`
 1. Publishes `src\Decal.Agent` self-contained for win-x64. A publish carries
    `plugins\Decal.Compat` (the `PublishDecalCompat` target in `Decal.Agent.csproj` lays it
    out as the build does: Decal.Compat, the Decal.Adapter, Decal.FileService,
-   Decal.Interop.Core and Virindi View Service stand-ins, Mono.Cecil, and
-   `native\sqlite3.dll`) and `acinject.exe`.
+   Decal.Interop.Core and Virindi View Service stand-ins, Mono.Cecil with its Rocks, Pdb and Mdb,
+   and `native\sqlite3.dll`) and `acinject.exe`. Every runtime assembly in
+   `Decal.Compat.deps.json` is checked for in the published folder - beside it, or beside
+   `DecalAgent.exe` for the host's own `AC.*` - since one left out fails only at its first use, as
+   Mono.Cecil.Rocks did: Global Inventory's SQLite was never widened.
 2. Publishes `src\Setup.Uninstall` into the same folder, for the same runtime: it runs on the
    runtime the Agent carries and adds only itself and `Setup.Common.dll`.
 3. Builds `ACUnrealOverlay.dll` with `native\build.ps1 -OutputDirectory` into a folder under

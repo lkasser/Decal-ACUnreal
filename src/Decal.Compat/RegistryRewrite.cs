@@ -78,6 +78,12 @@ namespace Decal.Compat
                 module.Write(output);
                 return output.ToArray();
             }
+            catch (Exception ex) when (WorkingCopy.MissingHostAssembly(ex) != null)
+            {
+                changed = false;
+                problem = "its registry reads could not be pointed at the 32-bit registry: " + WorkingCopy.MissingHostAssembly(ex);
+                return image;
+            }
             catch (Exception ex) when (ex is BadImageFormatException || ex is InvalidOperationException || ex is NotSupportedException
                                        || ex is ArgumentException || ex is IOException || ex is AssemblyResolutionException)
             {

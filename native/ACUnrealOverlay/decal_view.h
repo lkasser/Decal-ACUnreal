@@ -60,6 +60,13 @@ void SetDecalViewAlpha(int alpha);
 // player moved it this frame. `stored` is the edges vvs.s3db says it was left against, or null.
 void KeepVvsBarOnScreen(bool moved, const std::string* stored);
 
+// Once a session for each window, the first time it is drawn: call it inside the window, just
+// after Begin. Where the ini put the window is trusted only if the window lies on the display -
+// allowing `overhang` (left, top, right, bottom) past its edges - and `misplaced` is false. One
+// that does not, left there on a bigger screen or saved from a screen of no size, goes back to
+// `start`, where it would have started. Returns true when it was moved.
+bool PlaceOnDisplayOnce(ImVec2 start, ImVec4 overhang = ImVec4(0.0f, 0.0f, 0.0f, 0.0f), bool misplaced = false);
+
 // How a plugin's entry on the bar looks.
 enum class SwitchLook { Open, Closed, Faulted };
 

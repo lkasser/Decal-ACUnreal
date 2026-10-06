@@ -248,10 +248,10 @@ namespace AC.Host.Tests
             Assert.True(entry.IsRunning);
             Assert.Contains(log.Lines, l => l.StartsWith("WARN Troubled Plugin showed a message box, answered at once", StringComparison.Ordinal));
 
-            // Then the character logs in, and its login handler throws.
+            // Then the character logs in - its description comes - and its login handler throws.
             await OnGameThreadAsync(host, () =>
             {
-                host.WorldState.SetPlayerId(0x50000001);
+                AC.Host.Decoding.MessageDecoder.Apply(MacroTestHost.Description(0x50000001).ToMessage(), AC.Protocol.PacketDirection.Inbound, host.WorldState);
                 return 0;
             });
 
@@ -266,6 +266,42 @@ namespace AC.Host.Tests
             HostedPluginInfo info = Assert.Single(decal.HostedPlugins);
             Assert.Equal(entry.Detail, info.Detail);
             Assert.True(info.CanSwitch);
+
+            await host.DisposeAsync();
+        }
+
+        /// <summary>
+        /// An exception a plugin catches and prints through another plugin - Mag-Tools' through
+        /// Virindi Chat System, whose code is the nearer on the stack - is the printer's caller's
+        /// fault, not the printer's: Virindi Chat System was "running, with errors" for every one
+        /// of Mag-Tools'.
+        /// </summary>
+        [Fact]
+        public async Task AFaultPrintedThroughAnotherPluginIsTheOnesWhoseItWas()
+        {
+            string chatFolder = Install(Path.Combine(_dataRoot, "installs"), "Chat", Path.Combine(RegisteredFixtureFolder, "TroubledPlugin", "TroubledPlugin.dll"));
+            FakeDecalRegistry registry = new FakeDecalRegistry();
+            registry.Plugins.Add(new DecalRegistryEntry(TroubledClsid, "Troubled Plugin", Path.Combine(RegisteredFixtureFolder, "TroubledPlugin"), "TroubledPlugin.dll"));
+            registry.Plugins.Add(new DecalRegistryEntry("{C0000000-0000-0000-0000-00000000000C}", "Chat Plugin", chatFolder, "TroubledPlugin.dll"));
+
+            (GameHost host, DecalCompatPlugin decal, _) = await StartWithRegistryAsync(registry, TimeSpan.FromSeconds(30));
+            DecalPluginEntry troubled = decal.Find("Troubled Plugin");
+            DecalPluginEntry chat = decal.Find("Chat Plugin");
+            Assert.True(troubled.IsRunning);
+            Assert.True(chat.IsRunning);
+
+            const string Line = "<{Troubled}>: Exception caught: Object reference not set to an instance of an object.";
+            MethodInfo through = troubled.Context.MainAssembly.GetType("TroubledPlugin.LegacyCalls", throwOnError: true).GetMethod("Through");
+            MethodInfo say = chat.Context.MainAssembly.GetType("TroubledPlugin.LegacyCalls", throwOnError: true).GetMethod("Say");
+            await OnGameThreadAsync(host, () =>
+            {
+                Action print = () => say.Invoke(null, new object[] { Line });
+                through.Invoke(null, new object[] { print });
+                return 0;
+            });
+
+            Assert.Contains(troubled.Faults, f => f.Contains("it reported in chat that <{Troubled}>: Exception caught: Object reference not set", StringComparison.Ordinal));
+            Assert.DoesNotContain(chat.Faults, f => f.Contains("<{Troubled}>", StringComparison.Ordinal));
 
             await host.DisposeAsync();
         }

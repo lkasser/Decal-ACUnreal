@@ -85,6 +85,20 @@ namespace AC.Host.Runtime
             state.VvsBar = looks?.VvsBar;
             state.KeyCapture = host.KeyCaptureOwner ?? string.Empty;
 
+            // The client's own plugin bar and the scale it is drawn at, which the overlay starts
+            // its bars clear of.
+            if (host.ClientPluginBar is AC.Host.Actions.ClientPluginBar clientBar)
+            {
+                state.ClientUi = new AC.Host.Overlay.OverlayClientUi
+                {
+                    UiScale = host.ClientUiScale,
+                    PluginBar = new[] { clientBar.X, clientBar.Y, clientBar.Width, clientBar.Height },
+                };
+            }
+
+            // Whether minimizing the game parks it off-screen instead, where it goes on taking keys.
+            state.KeepPlayingMinimized = host.KeepPlayingMinimized;
+
             foreach (BoundHotkey hotkey in host.CollectHotkeys())
             {
                 // A hotkey switched off keeps its key, but the key goes to the game.

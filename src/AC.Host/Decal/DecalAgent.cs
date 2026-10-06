@@ -65,6 +65,12 @@ namespace AC.Host.Decal
             /// VVSWindowToggleKeys table kept them.
             /// </summary>
             public List<string> WindowToggles { get; set; } = new List<string>();
+
+            /// <summary>
+            /// "Keep playing while the game is minimized": minimizing the game parks it off-screen
+            /// instead, where it goes on taking the keys plugins hold. See <see cref="GameHost.KeepPlayingMinimized"/>.
+            /// </summary>
+            public bool KeepPlayingMinimized { get; set; }
         }
 
         private HotkeyWindows _hotkeyWindows;
@@ -208,6 +214,12 @@ namespace AC.Host.Decal
             foreach (string disabled in _settings.Value.DisabledHotkeys ?? new List<string>())
                 _host.DisabledHotkeys.Add(disabled);
 
+            // Keeping on while minimized as the player left it, unless the command line said for
+            // this run; and remembered whenever it changes, from here or from the control pipe.
+            if (!_host.Settings.ContainsKey("Overlay:KeepPlayingMinimized"))
+                _host.KeepPlayingMinimized = _settings.Value.KeepPlayingMinimized;
+            _host.KeepPlayingMinimizedChanged += OnKeepPlayingMinimizedChanged;
+
             BuildHotkeys();
             _hotkeyWindows = new HotkeyWindows(_host, PluginName, Bind, EnableHotkey, () => WindowToggles, SetWindowToggle);
 
@@ -226,6 +238,7 @@ namespace AC.Host.Decal
         public void Shutdown()
         {
             _host.Tick -= OnTick;
+            _host.KeepPlayingMinimizedChanged -= OnKeepPlayingMinimizedChanged;
             if (_walking)
                 _host.InputKeys.Hold(GameKey.Forward, false);
         }
@@ -251,6 +264,9 @@ namespace AC.Host.Decal
 
             if (_view.TryGet("chkAct", out Checkbox act))
                 act.Changed += (_, e) => SetActing(act, e.Checked);
+
+            if (_view.TryGet("chkKeepPlaying", out Checkbox keepPlaying))
+                keepPlaying.Changed += (_, e) => _host.KeepPlayingMinimized = e.Checked;
 
             foreach ((GameKey key, string name) in KeyEdits)
             {
@@ -416,6 +432,17 @@ namespace AC.Host.Decal
             ShowKeys();
         }
 
+        private void OnKeepPlayingMinimizedChanged(object sender, bool on)
+        {
+            if (_settings == null)
+                return;
+
+            _settings.Value.KeepPlayingMinimized = on;
+            _settings.Save();
+            if (_view != null && _view.TryGet("chkKeepPlaying", out Checkbox box))
+                box.Checked = on;
+        }
+
         private void ShowKeys()
         {
             foreach ((GameKey key, string name) in KeyEdits)
@@ -470,7 +497,9 @@ namespace AC.Host.Decal
             double moved = now.HasValue && _walkFrom.HasValue ? Distance(_walkFrom.Value, now.Value) : 0;
             string said = moved > 0.5
                 ? string.Create(CultureInfo.InvariantCulture, $"Moved {moved:0.0} m forward: the keys work.")
-                : $"Did not move. Is {GameInput.Describe(_host.InputKeys.VirtualKey(GameKey.Forward))} the game's forward key, and is the game window in front?";
+                : _host.GameWindow.Minimized
+                    ? "Did not move: the game is minimized."
+                    : $"Did not move. Is {GameInput.Describe(_host.InputKeys.VirtualKey(GameKey.Forward))} the game's forward key?";
             SetText("lblTestWalk", said);
             _host.Log.Info("Decal walk test: " + said);
         }
@@ -633,6 +662,9 @@ namespace AC.Host.Decal
         {
             if (_view.TryGet("chkAct", out Checkbox act))
                 act.Checked = _host.CanAct && _host.ActionsAllowed;
+
+            if (_view.TryGet("chkKeepPlaying", out Checkbox keepPlaying))
+                keepPlaying.Checked = _host.KeepPlayingMinimized;
 
             ICharacterView character = _host.Character;
             SetText("lblServer", string.IsNullOrEmpty(_host.World.ServerName) ? "not connected" : _host.World.ServerName);

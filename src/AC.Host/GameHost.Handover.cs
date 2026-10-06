@@ -68,6 +68,21 @@ namespace AC.Host
         public DateTimeOffset? CarriedOnFrom { get; private set; }
 
         /// <summary>
+        /// Where the host looked for a session the host before it handed over, and what it found
+        /// there, in a few words for <c>achost ctl status</c> - "none at", "taken from", or why what
+        /// was there was not taken. Null when it did not look: a replay, or a host told not to.
+        /// Set by whatever looked, before the host starts.
+        /// </summary>
+        public string HandoverLookup { get; set; }
+
+        /// <summary>
+        /// What became of the session offered with <see cref="OfferHandover"/>, in a few words:
+        /// waiting for the game to be heard from, carried on, or let go and why. Null when none was
+        /// offered. Game thread only.
+        /// </summary>
+        public string HandoverFate { get; private set; }
+
+        /// <summary>
         /// Gives the host what the host before it handed over. Taken up if the first traffic is the
         /// same session going on; a new login, or a snapshot gone stale, and it is let go. Before
         /// <see cref="StartAsync"/>.
@@ -77,16 +92,24 @@ namespace AC.Host
             if (_started) throw new InvalidOperationException("A session is handed over before the host starts.");
 
             _handover = snapshot;
+            HandoverFate = snapshot != null ? "to be carried on once the game is heard from" : null;
         }
 
         /// <summary>
         /// What this host hands to the next: the messages its world was built from, and what it keeps
-        /// besides. Null when there is nothing to hand over - no session going on, or one that
+        /// besides - or, when the game was never heard from, what the host before it handed over,
+        /// still untaken. Null when there is nothing to hand over - no session going on, or one that
         /// outgrew the journal. On the game thread, or once the host has ended; whoever writes it
         /// adds the relay's endpoints and state.
         /// </summary>
         public HandoverSnapshot CreateHandover(DateTimeOffset now)
         {
+            // Stopped before the game was heard from, still holding what the host before it left:
+            // that goes on to the next host as it came, its age and all, rather than being lost
+            // between two restarts.
+            if (!_sessionUnderWay && _handover != null)
+                return _handover;
+
             if (!_sessionUnderWay || _journal.Overflowed)
                 return null;
 
@@ -121,20 +144,37 @@ namespace AC.Host
             if (start == SessionStart.Login)
             {
                 if (handover != null)
+                {
+                    HandoverFate = "let go: the client began a new login";
                     _log.Info("The client began a new login, so the session the host before this one handed over is not carried on.");
+                }
+
                 return;
             }
 
-            if (handover != null && _world.Now - handover.WrittenAt <= HandoverSnapshot.MaxAge)
+            TimeSpan waited = handover != null ? _world.Now - handover.WrittenAt : TimeSpan.Zero;
+            if (handover != null && waited <= HandoverSnapshot.MaxAge)
             {
                 CarryOn(handover);
                 return;
             }
 
             JoinedMidSession = true;
+            const string WithoutIt = "Until the character enters the world again it does not know the character, what it carries, "
+                + "what is around it or the server's name, and plugins work without them. Log out to the character list and enter the world again.";
+
+            if (handover != null)
+            {
+                // Taken in time, but the game was not heard from until too late: as good as none.
+                HandoverFate = $"let go: the game was first heard from {waited.TotalSeconds:0} s after it was written, too late to carry on";
+                _log.Warn($"The host joined a session already under way, and the session the host before it handed over at {handover.WrittenAt.ToLocalTime():HH:mm:ss} "
+                    + $"was {waited.TotalSeconds:0} s old by the time the game was first heard from - more than the {HandoverSnapshot.MaxAge.TotalMinutes:0} minutes "
+                    + "a session can be carried on after - so it was let go. " + WithoutIt);
+                return;
+            }
+
             _log.Warn("The host joined a session already under way - it started while the game was connected - and nothing was handed over "
-                + "from a host before it. Until the character enters the world again it does not know the character, what it carries, "
-                + "what is around it or the server's name, and plugins work without them. Log out to the character list and enter the world again.");
+                + "from a host before it. " + WithoutIt);
         }
 
         /// <summary>
@@ -212,6 +252,7 @@ namespace AC.Host
             JoinedMidSession = snapshot.JoinedMidSession;
             _toldJoinedMidSession = snapshot.ToldJoinedMidSession;
             CarriedOnFrom = snapshot.WrittenAt;
+            HandoverFate = "carried on";
 
             CharacterState character = _world.Character;
             _log.Info($"Carried on the session the host before this one handed over at {snapshot.WrittenAt.ToLocalTime():HH:mm:ss}: "
@@ -258,9 +299,10 @@ namespace AC.Host
             CharacterState character = _world.Character;
             if (character.Id != 0)
             {
-                // At a login the character is named before its object is described, and Decal's
-                // LoginComplete waits for the object; so the object stays out of sight here, and
-                // LoginComplete comes once everything below has been said.
+                // At a login the character is named before its object is described, so the object
+                // stays out of sight here, and Decal's Login waits for it, told of next, as Decal's
+                // waited for the description. Decal's LoginComplete waits for the client's word that
+                // it had entered the world, which is retold below with the login's messages, in its order.
                 WorldObject self = character.Object;
                 character.Object = null;
                 try

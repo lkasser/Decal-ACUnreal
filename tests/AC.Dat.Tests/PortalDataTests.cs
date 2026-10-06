@@ -281,6 +281,28 @@ namespace AC.Dat.Tests
             Assert.Empty(ExperienceTable.ParseLevels(data.Take(30).ToArray()));
         }
 
+        /// <summary>
+        /// The chat poses: the client's 309 words between asterisks and the 74 emotes they name,
+        /// each with its two lines - read to the last byte, or a string out of step would leave
+        /// the rest as noise.
+        /// </summary>
+        [SkippableFact]
+        public void TheChatPosesNameEmotesWithTheirWords()
+        {
+            Skip.IfNot(Available, "No client_portal.dat on this machine.");
+
+            using PortalData portal = PortalData.Open(PortalPath);
+            ChatPoseTable poses = portal.ChatPoses;
+
+            Assert.NotNull(poses);
+            Assert.True(poses.Poses.Count > 300, $"only {poses.Poses.Count} poses");
+            Assert.True(poses.Emotes.Count > 70, $"only {poses.Emotes.Count} emotes");
+            Assert.Equal("DrudgeDanceState", poses.Find("dance").Command);
+            Assert.Equal("waves.", poses.Find("wave").Others);
+            Assert.Equal("Beckon", poses.Find("come here").Command);
+            Assert.All(poses.Poses.Values, command => Assert.NotNull(poses.Emotes.GetValueOrDefault(command)));
+        }
+
         [Fact]
         public void OpeningSomethingThatIsNotADatIsRejected()
         {

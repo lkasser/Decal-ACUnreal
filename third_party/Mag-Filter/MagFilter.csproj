@@ -1,0 +1,95 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Mag-Filter, Mag-nus's Decal network filter from Mag-Plugins (https://github.com/Mag-nus/Mag-Plugins),
+       built from its own sources, unchanged, against this repository's Decal.Adapter and Virindi
+       View Service stand-ins instead of Decal's own - as tests/decal-plugins builds Virindi's
+       AutoWireup example. The sources are not in this repository: fetch.ps1 beside this file
+       fetches them, at the commit below, into upstream\ (ignored by git), and
+       tools\install-plugin.ps1 -Plugin MagFilter fetches, builds and installs it as a Decal plugin
+       in Decal Compat's own folder. See README.md for what it does under this host and its licence. -->
+  <PropertyGroup>
+    <AssemblyName>MagFilter</AssemblyName>
+    <RootNamespace>MagFilter</RootNamespace>
+    <IsPackable>false</IsPackable>
+
+    <!-- Where Mag-Plugins was fetched to, and the commit it must be at. -->
+    <MagPluginsSource Condition="'$(MagPluginsSource)' == ''">$(MSBuildThisFileDirectory)upstream</MagPluginsSource>
+    <MagPluginsSource>$([MSBuild]::EnsureTrailingSlash('$(MagPluginsSource)'))</MagPluginsSource>
+    <MagPluginsCommit>32304397b1abf42eb146db4968237f3ed47a2a9d</MagPluginsCommit>
+
+    <!-- Only the files listed below: upstream\ beside this holds all of Mag-Plugins. -->
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <!-- The plugin brings its own AssemblyInfo, as its own project built it. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- 2013-era code: unused fields and events, obsolete members, nullable-era noise; and VCS5,
+         a .NET Framework assembly, is compiled against for its types alone. -->
+    <NoWarn>$(NoWarn);CS0067;CS0168;CS0169;CS0414;CS0612;CS0618;CS0649;CS1701;CS1702;CS8002;MSB3277;CA1416</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Exactly the files its own Mag-Filter.csproj compiles, and nothing else of the repository:
+         a file added upstream is not built until it is listed here, and read first. -->
+    <Compile Include="$(MagPluginsSource)Shared\Debug.cs" Link="Shared\Debug.cs" />
+    <Compile Include="$(MagPluginsSource)Shared\PostMessageTools.cs" Link="Shared\PostMessageTools.cs" />
+    <Compile Include="$(MagPluginsSource)Shared\RateLimiter.cs" Link="Shared\RateLimiter.cs" />
+    <Compile Include="$(MagPluginsSource)Shared\Settings\Setting.cs" Link="Shared\Settings\Setting.cs" />
+    <Compile Include="$(MagPluginsSource)Shared\Settings\SettingsFile.cs" Link="Shared\Settings\SettingsFile.cs" />
+    <Compile Include="$(MagPluginsSource)Shared\User32.cs" Link="Shared\User32.cs" />
+    <Compile Include="$(MagPluginsSource)Shared\VCS_Connector.cs" Link="Shared\VCS_Connector.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\AutoRetryLogin.cs" Link="AutoRetryLogin.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\Character.cs" Link="Character.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\FrameRateLimiter.cs" Link="FrameRateLimiter.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\DefaultFirstCharacter.cs" Link="DefaultFirstCharacter.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\DefaultFirstCharacterManager.cs" Link="DefaultFirstCharacterManager.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\FastQuit.cs" Link="FastQuit.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\FilterCore.cs" Link="FilterCore.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\LoginCharacterTools.cs" Link="LoginCharacterTools.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\LoginCompleteMessageQueueManager.cs" Link="LoginCompleteMessageQueueManager.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\LoginNextCharacterManager.cs" Link="LoginNextCharacterManager.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\AfterLoginCompleteMessageQueueManager.cs" Link="AfterLoginCompleteMessageQueueManager.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\Properties\AssemblyInfo.cs" Link="Properties\AssemblyInfo.cs" />
+    <Compile Include="$(MagPluginsSource)Mag-Filter\Settings\SettingsManager.cs" Link="Settings\SettingsManager.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Supplied at run time by whatever loads the plugin, as Decal supplied its own. -->
+    <ProjectReference Include="..\..\src\Decal.Adapter\Decal.Adapter.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\..\src\VirindiViewService\VirindiViewService.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <!-- Virindi Chat System, for its types alone: Mag-Filter's chat goes to it only when it finds
+         it loaded, which it never is here, so it is never shipped or loaded. -->
+    <Reference Include="VCS5">
+      <HintPath>$(MagPluginsSource)lib\VirindiPlugins\VCS5.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Its timers are Windows Forms timers, as in the client; a Decal plugin is given Windows
+         Forms from Windows' desktop runtime (DecalPluginLoadContext), so it ships no copy. -->
+    <Reference Include="System.Windows.Forms">
+      <HintPath>$(NetCoreTargetingPackRoot)\Microsoft.WindowsDesktop.App.Ref\$(BundledNETCoreAppPackageVersion)\ref\$(TargetFramework)\System.Windows.Forms.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Nothing is built from a checkout that is not the one this was checked against, and nothing
+       that handles an account's password is built at all: Mag-Filter at this commit has no such
+       feature - its logins only choose a character - and a later one that brought one in would
+       stop here until it is read and left out. -->
+  <Target Name="CheckMagPluginsSource" BeforeTargets="CoreCompile;ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(MagPluginsSource)Mag-Filter\FilterCore.cs')"
+           Text="Mag-Plugins' sources are not in $(MagPluginsSource). Run third_party\Mag-Filter\fetch.ps1 first, or pass -p:MagPluginsSource=&lt;a checkout of https://github.com/Mag-nus/Mag-Plugins&gt;." />
+    <PropertyGroup>
+      <_MagPluginsHead Condition="Exists('$(MagPluginsSource).git\HEAD')">$([System.IO.File]::ReadAllText('$(MagPluginsSource).git\HEAD').Trim())</_MagPluginsHead>
+    </PropertyGroup>
+    <Warning Condition="'$(_MagPluginsHead)' != '' and '$(_MagPluginsHead)' != '$(MagPluginsCommit)'"
+             Text="$(MagPluginsSource) is at $(_MagPluginsHead), not $(MagPluginsCommit), the commit this build was checked against. Run third_party\Mag-Filter\fetch.ps1 to put it there." />
+    <ItemGroup>
+      <_MagFilterCredentialCode Include="@(Compile)" Condition="$([System.IO.File]::ReadAllText('%(Compile.FullPath)').ToLowerInvariant().Contains('password')) or $([System.IO.File]::ReadAllText('%(Compile.FullPath)').ToLowerInvariant().Contains('credential'))" />
+    </ItemGroup>
+    <Error Condition="'@(_MagFilterCredentialCode)' != ''"
+           Text="Mag-Filter's sources now mention an account's password or credentials (@(_MagFilterCredentialCode->'%(Filename)%(Extension)', ', ')). This build never handles one: read what it does and leave it out before building." />
+  </Target>
+
+</Project>

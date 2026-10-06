@@ -218,6 +218,54 @@ namespace AC.Host.Tests
         }
 
         /// <summary>
+        /// `ctl status` says which of AC:Unreal's own client plugins are enabled - UCM can play the
+        /// character, and whether it is running the client does not say - and its Desktop UI Scale,
+        /// read from the client's Saved folder: here a made-up one of the client's shape.
+        /// </summary>
+        [Fact]
+        public async Task StatusSaysWhichClientPluginsAreEnabledAndTheClientsUiScale()
+        {
+            string root = NewRoot();
+            string saved = Path.Combine(root, "Saved");
+            Directory.CreateDirectory(Path.Combine(saved, "ClientPlugins"));
+            Directory.CreateDirectory(Path.Combine(saved, "Config", "Windows"));
+            File.WriteAllText(ClientSettingsWatcher.PluginSettingsPath(saved), "{ \"ucm\": \"enabled:cast,combat\", \"waypoint\": \"disabled\" }");
+            File.WriteAllText(ClientSettingsWatcher.GameUserSettingsPath(saved), "[ACE.Presentation]\r\nDesktopUIScale=1.25\r\n");
+
+            HostRuntimeOptions options = Isolated(root, new QuietTransport());
+            options.ClientSettingsFolder = saved;
+            await using HostRuntime runtime = new HostRuntime(options, new ListLog());
+            await runtime.StartAsync();
+
+            string status = string.Empty;
+            for (int i = 0; i < 50 && !status.Contains("ui scale"); i++)
+            {
+                status = await ControlPipe.SendAsync("status", options.ControlPipeName);
+                if (!status.Contains("ui scale"))
+                    await Task.Delay(100);
+            }
+
+            Assert.Contains("ac plugins enabled: UCM (cast, combat) - UCM can play the character: enabled, though whether it is running the client does not say", status);
+            Assert.Contains("ui scale   125%, the client's Desktop UI Scale; its plugin bar at 8,80 62x214 (where the client starts it)", status);
+            Assert.True(runtime.Host.ClientPlugins.UcmEnabled);
+            Assert.Equal(1.25, runtime.Host.ClientUiScale);
+        }
+
+        /// <summary>A host that is not relaying a live game reads no client's settings: status says they are not known.</summary>
+        [Fact]
+        public async Task AHostNotRelayingAGameReadsNoClientSettings()
+        {
+            HostRuntimeOptions options = Isolated(NewRoot(), new QuietTransport());
+            await using HostRuntime runtime = new HostRuntime(options, new ListLog());
+            await runtime.StartAsync();
+
+            Assert.Null(runtime.ClientSettings);
+            string status = await ControlPipe.SendAsync("status", options.ControlPipeName);
+            Assert.Contains("ac plugins not known (the client's settings were not read)", status);
+            Assert.DoesNotContain("ui scale", status);
+        }
+
+        /// <summary>
         /// A window a plugin hosts is reached by its overlay name, "Plugin/key", as the Decal
         /// Agent's hotkey windows are: `windows` lists them, and view and press work on them.
         /// </summary>
@@ -258,6 +306,41 @@ namespace AC.Host.Tests
         }
 
         /// <summary>
+        /// One asker still waiting for its answer - a `ctl logout` waits up to 25 seconds - does not
+        /// keep the next out: a position poll beside it is answered, not told no host is running.
+        /// A second host on the same name still serves nothing while the first holds it.
+        /// </summary>
+        [Fact]
+        public async Task TheControlPipeAnswersOneAskerWhileAnotherWaits()
+        {
+            HostRuntimeOptions options = Isolated(NewRoot(), new QuietTransport());
+            await using HostRuntime runtime = new HostRuntime(options, new ListLog());
+            await runtime.StartAsync();
+
+            // Connected, and its line not yet sent: the pipe is busy with it, as with a logout.
+            using NamedPipeClientStream waiting = new NamedPipeClientStream(".", options.ControlPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await waiting.ConnectAsync(5000);
+
+            string status = await ControlPipe.SendAsync("status", options.ControlPipeName).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Contains("acting", status);
+
+            // The first is answered in its turn.
+            await waiting.WriteAsync(Encoding.UTF8.GetBytes("act" + Environment.NewLine));
+            using (StreamReader reader = new StreamReader(waiting, Encoding.UTF8, false, 1024, leaveOpen: true))
+                Assert.Equal("acting off", (await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10))).Trim());
+
+            // A second host given the same name leaves it to the first.
+            HostRuntimeOptions second = Isolated(NewRoot(), new QuietTransport());
+            second.ControlPipeName = options.ControlPipeName;
+            second.EnableActions = true;
+            await using HostRuntime other = new HostRuntime(second, new ListLog());
+            await other.StartAsync();
+            Assert.True(other.Host.ActionsAllowed);
+            for (int i = 0; i < 5; i++)
+                Assert.Contains("acting     off", await ControlPipe.SendAsync("status", options.ControlPipeName));
+        }
+
+        /// <summary>
         /// A live tester presses a hotkey and types a line through the pipe: the hotkey goes to its
         /// plugin as the overlay sends one, and the line takes the typed line's route.
         /// </summary>
@@ -280,6 +363,53 @@ namespace AC.Host.Tests
             Assert.Equal("say what?", (await ControlPipe.SendAsync("say", options.ControlPipeName)).Trim());
             string said = (await ControlPipe.SendAsync("say /nosuchcommand", options.ControlPipeName)).Trim();
             Assert.True(Enum.TryParse(said, out ChatCommandOutcome _), said);
+        }
+
+        /// <summary>
+        /// The overlay says what the game window is doing and the host keeps it, for plugins and for
+        /// `ctl status` and `ctl window`; `ctl window keep on` switches parking the game in place of
+        /// minimizing it, which the overlay reads from the next snapshot.
+        /// </summary>
+        [Fact]
+        public async Task TheOverlaySaysWhatTheGameWindowDoesAndTheControlPipeSwitchesKeepingOn()
+        {
+            HostRuntimeOptions options = Isolated(NewRoot(), new QuietTransport());
+            options.Overlay = true;
+            await using HostRuntime runtime = new HostRuntime(options, new ListLog());
+            await runtime.StartAsync();
+
+            Assert.Contains("window     not known (no overlay); keep playing while minimized off", await ControlPipe.SendAsync("status", options.ControlPipeName));
+
+            using NamedPipeClientStream pipe = new NamedPipeClientStream(".", options.OverlayPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+            await pipe.ConnectAsync(5000);
+
+            // As the overlay frames a command: four bytes of length, then the JSON.
+            byte[] json = Encoding.UTF8.GetBytes("{\"name\":\"game-window\",\"value\":\"1,0,0\",\"row_id\":\"\",\"owner\":\"\",\"control_id\":\"\"}");
+            byte[] frame = new byte[4 + json.Length];
+            BinaryPrimitives.WriteInt32LittleEndian(frame, json.Length);
+            json.CopyTo(frame, 4);
+            await pipe.WriteAsync(frame);
+            await pipe.FlushAsync();
+
+            Assert.True(await Eventually(() => runtime.Host.GameWindow.Minimized));
+            Assert.Contains("minimized, no frames; keep playing while minimized off", await ControlPipe.SendAsync("window", options.ControlPipeName));
+
+            Assert.Contains("keep playing while minimized on", await ControlPipe.SendAsync("window keep on", options.ControlPipeName));
+            Assert.True(runtime.Host.KeepPlayingMinimized);
+            Assert.Contains("usage", await ControlPipe.SendAsync("window keep maybe", options.ControlPipeName));
+
+            // The overlay hears of it in the snapshots that follow.
+            using CancellationTokenSource timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            byte[] prefix = new byte[4];
+            bool told = false;
+            while (!told)
+            {
+                await pipe.ReadExactlyAsync(prefix, timeout.Token);
+                byte[] body = new byte[BinaryPrimitives.ReadInt32LittleEndian(prefix)];
+                await pipe.ReadExactlyAsync(body, timeout.Token);
+                using JsonDocument document = JsonDocument.Parse(body);
+                told = document.RootElement.TryGetProperty("keep_playing_minimized", out JsonElement keep) && keep.GetBoolean();
+            }
         }
 
         /// <summary>
@@ -350,7 +480,7 @@ namespace AC.Host.Tests
         /// The first of two consecutive UDP ports on loopback that nothing holds, from the
         /// ephemeral range, which no game server or host is configured on.
         /// </summary>
-        private static int FreePortPair()
+        internal static int FreePortPair()
         {
             for (int attempt = 0; attempt < 50; attempt++)
             {

@@ -79,6 +79,15 @@ seconds, when the pipe drops, and when it unloads. This is how a plugin walks: t
 decides where its own character is, so moving it means pressing its keys. A new connection
 starts with nothing held. `native/test.ps1` checks the press/release bookkeeping.
 
+A minimized game. The held keys are pressed, pressed again after the window is activated,
+deactivated, minimized or restored, and let go when the host goes quiet by a pump on the
+DLL's own thread, not on `Present`, which a minimized game calls rarely or never. The DLL tells
+the host what the window is doing with a host-owned `Command` named "game-window", value
+"minimized,drawing,parked" (each 0 or 1), sent when it changes and to each host that connects.
+`State` gains `keep_playing_minimized`, absent meaning false: while it is true, minimizing the
+game parks the window off-screen at about 30 frames a second instead. `native/test.ps1` checks
+the pump; `native/docs/d3d12-overlay-design.md` section 9 has the rest.
+
 Themes and hudified windows. `View` gains `theme` ("Decal", "Float"; empty means Decal, which
 is how every window looked before a host sent one), `ghosted` and `click_through` - how the
 window starts - and `resizeable`, `ghostable` and `click_throughable` - what the player may do,
@@ -88,6 +97,18 @@ from the title bar - theme, pin, click-through, alpha - the DLL keeps itself, in
 `[VVSView][owner]`, and it outranks what the host says; nothing goes back over the pipe.
 Holding left Ctrl shows a hudified window's frame; the DLL reads that key from the keyboard,
 not from window messages, since the game may take its keys as raw input.
+
+AC:Unreal's Desktop UI Scale (release 94 on). A click gains `ui_scale`, the scale the player
+chose in the client, 1 to 3, absent meaning 1: the DLL draws the layout that much larger,
+centred, but no larger than the client itself does - the largest quarter step at which 800 by
+600 fits the window, never below 1 (`client_ui.h`, `ClientUiScale`, as ACUnreal.exe release 96
+works it out). `State` gains `client_ui`, absent when the host could not read the client's
+settings: `{"ui_scale": 1.5, "plugin_bar": [8, 80, 62, 214]}`, the client's own plugin bar in
+its interface units. VVS's bar, where VVS starts it, and Decal's bar down a side, where Decal's
+registry has no place for it, start 4 below that bar where they would overlap it; a bar that
+came up before `client_ui` arrived is moved there once, unless the player moved it first. Where
+the player has put a bar - vvs.s3db, Decal's registry, the ini - it stays. `native/test.ps1`
+checks the scale against the client's own test cases and the bars' starting places.
 
 ## The next change, and why it is needed
 

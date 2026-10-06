@@ -17,8 +17,10 @@ namespace AC.Host.Tests
     {
         public const uint PlayerId = 0x50000001;
 
-        public MacroTestHost(bool actionsAvailable = true)
+        /// <param name="dataRoot">Where plugins' data folders go; a shared one in the temp folder when null.</param>
+        public MacroTestHost(bool actionsAvailable = true, string dataRoot = null)
         {
+            _dataRoot = dataRoot;
             Actions = new RecordingActions { IsAvailable = actionsAvailable };
             WorldState.SetServerName("Test Server");
             WorldObject me = WorldState.GetOrAdd(PlayerId, out _);
@@ -49,6 +51,12 @@ namespace AC.Host.Tests
 
         IGameInput IHost.Input => Input;
 
+        /// <summary>The game window as the overlay would say it; not known unless a test says otherwise.</summary>
+        public GameWindowState GameWindow { get; set; } = GameWindowState.Unknown;
+
+        /// <summary>AC:Unreal's own client plugins as its settings would say; not known unless a test says otherwise.</summary>
+        public ClientPluginsState ClientPlugins { get; set; } = ClientPluginsState.Unknown;
+
         public IGameData GameData => WorldState.GameData;
 
         IPluginLog IHost.Log => Log;
@@ -62,10 +70,12 @@ namespace AC.Host.Tests
 
         public string GetDataDirectory(IPlugin plugin)
         {
-            string path = Path.Combine(Path.GetTempPath(), "macro-test-" + plugin.Name);
+            string path = _dataRoot != null ? Path.Combine(_dataRoot, "plugins", plugin.Name) : Path.Combine(Path.GetTempPath(), "macro-test-" + plugin.Name);
             Directory.CreateDirectory(path);
             return path;
         }
+
+        private readonly string _dataRoot;
 
         public PluginSettings<T> LoadSettings<T>(IPlugin plugin) where T : class, new()
             => new PluginSettings<T>(Path.Combine(GetDataDirectory(plugin), Guid.NewGuid().ToString("N") + ".json"), Log);
@@ -140,6 +150,8 @@ namespace AC.Host.Tests
 
         public event EventHandler<string> LoggedOff { add => WorldState.LoggedOff += value; remove => WorldState.LoggedOff -= value; }
 
+        public event EventHandler LoggingOff { add => WorldState.LoggingOff += value; remove => WorldState.LoggingOff -= value; }
+
         public event EventHandler<WorldObject> ObjectCreated { add => WorldState.ObjectCreated += value; remove => WorldState.ObjectCreated -= value; }
 
         public event EventHandler<WorldObject> ObjectUpdated { add => WorldState.ObjectUpdated += value; remove => WorldState.ObjectUpdated -= value; }
@@ -184,8 +196,49 @@ namespace AC.Host.Tests
 
         public event EventHandler<string> Died { add => WorldState.Died += value; remove => WorldState.Died -= value; }
 
-        /// <summary>Never raised: the macro's tests build the world directly, not from messages.</summary>
-        public event EventHandler<AC.Host.Transport.GameMessageEventArgs> MessageSeen { add { } remove { } }
+        /// <summary>
+        /// Raised only by <see cref="Receive"/>: the macro's tests build the world directly, not
+        /// from messages.
+        /// </summary>
+        public event EventHandler<AC.Host.Transport.GameMessageEventArgs> MessageSeen;
+
+        /// <summary>A message as the host takes one in: applied to the world, then seen by whoever reads them.</summary>
+        public DecodeOutcome Receive(AC.Protocol.AcMessage message, AC.Protocol.PacketDirection direction = AC.Protocol.PacketDirection.Inbound)
+        {
+            DecodeOutcome outcome = MessageDecoder.Apply(message, direction, WorldState);
+            MessageSeen?.Invoke(this, new AC.Host.Transport.GameMessageEventArgs(direction, message));
+            return outcome;
+        }
+
+        /// <summary>
+        /// The character entering the world as ACE and the client tell it: its description first,
+        /// which names it, then the client's word that it has finished entering.
+        /// </summary>
+        public void EnterWorld(uint id = PlayerId)
+        {
+            Receive(Description(id).ToMessage());
+            Receive(ClientEntered().ToMessage(), AC.Protocol.PacketDirection.Outbound);
+        }
+
+        /// <summary>The least of a character's description: its strength, and nothing else.</summary>
+        public static WireWriter Description(uint id)
+        {
+            WireWriter description = WireWriter.GameEvent(id, GameEvents.PlayerDescription)
+                .U32(0)                 // no property tables
+                .U32(1)                 // weenie type
+                .U32(0x0001)            // attributes only
+                .U32(1)                 // has health
+                .U32(0x0001)            // strength
+                .U32(10).U32(100).U32(0)
+                .U32(0).U32(0);         // the options: no flags, no options
+            for (int bar = 0; bar < 8; bar++)
+                description.U32(0);
+            return description;
+        }
+
+        /// <summary>The client's LoginComplete action: it has finished entering the world.</summary>
+        public static WireWriter ClientEntered(uint sequence = 1)
+            => new WireWriter(Opcodes.GameAction).U32(sequence).U32(GameActions.LoginComplete);
 
         /// <summary>Lines run as though typed, in order, with the plugin that ran each.</summary>
         public List<(string Text, IPlugin From)> ChatCommands { get; } = new List<(string, IPlugin)>();
@@ -198,6 +251,12 @@ namespace AC.Host.Tests
             ChatCommands.Add((text, from));
             return ChatCommandOutcome(text);
         }
+
+        /// <summary>Rows put on a status HUD, as "plugin - entry" to what each says now.</summary>
+        public Dictionary<string, string> StatusRows { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        public void UpdateStatusRow(string plugin, string entry, string value, long colour = 0xFFFFFFFF)
+            => StatusRows[plugin + " - " + entry] = value;
     }
 
     /// <summary>Actions written down instead of sent, in order, as "verb args".</summary>
@@ -254,5 +313,21 @@ namespace AC.Host.Tests
         public Task<bool> StackableMergeAsync(uint fromStackId, uint toStackId, int amount) => Record($"merge 0x{fromStackId:X8} 0x{toStackId:X8} {amount}");
 
         public Task<bool> SalvageAsync(uint toolId, IReadOnlyList<uint> itemIds) => Record($"salvage 0x{toolId:X8} {string.Join(" ", itemIds.Select(id => $"0x{id:X8}"))}");
+
+        public Task<bool> GiveAsync(uint objectId, uint targetId, int amount) => Record($"give 0x{objectId:X8} 0x{targetId:X8} {amount}");
+
+        public Task<bool> LogOutAsync() => Record("log out");
+
+        public Task<bool> EnterWorldAsync(uint characterId) => Record($"enter 0x{characterId:X8}");
+
+        public Task<bool> FellowshipRecruitAsync(uint playerId) => Record($"fellow recruit 0x{playerId:X8}");
+
+        public Task<bool> FellowshipQuitAsync(bool disband) => Record(disband ? "fellow disband" : "fellow quit");
+
+        public Task<bool> FellowshipDismissAsync(uint playerId) => Record($"fellow dismiss 0x{playerId:X8}");
+
+        public Task<bool> FellowshipAssignLeaderAsync(uint playerId) => Record($"fellow leader 0x{playerId:X8}");
+
+        public Task<bool> FellowshipSetOpenAsync(bool open) => Record(open ? "fellow open" : "fellow close");
     }
 }

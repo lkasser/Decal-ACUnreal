@@ -83,6 +83,12 @@ namespace AC.Proxy
         private const int RememberedWithheld = 512;
 
         /// <summary>
+        /// How many of the numbers messages of ours went out under to remember. A message is
+        /// seen going on in the very packet it went in, so this is many times what is needed.
+        /// </summary>
+        private const int RememberedOurs = 512;
+
+        /// <summary>
         /// How far behind the furthest number gone on a change to the numbering is still kept
         /// apart. Fragments come late by up to a couple of hundred numbers, and resent ones by
         /// a handful, so anything further back is long settled.
@@ -133,6 +139,14 @@ namespace AC.Proxy
         private readonly Queue<uint> _withheldOrder = new Queue<uint>();
 
         /// <summary>
+        /// The numbers messages of ours went out under, the latest few hundred, so what is seen
+        /// going on can be told from what the client itself sent (<see cref="IsOurs"/>). Under its
+        /// own lock: asked by whoever watches the stream, which need not be the thread rewriting it.
+        /// </summary>
+        private readonly HashSet<uint> _ours = new HashSet<uint>();
+        private readonly Queue<uint> _oursOrder = new Queue<uint>();
+
+        /// <summary>
         /// Messages being taken out whose fragments have not all arrived, by number: put
         /// together to be handed on through <see cref="Withheld"/> once they have.
         /// </summary>
@@ -174,6 +188,40 @@ namespace AC.Proxy
 
         /// <summary>Messages of ours that have been woven into the stream.</summary>
         public int InjectedMessages { get; private set; }
+
+        /// <summary>
+        /// Whether the fragment number a message went on under is one this gave a message of ours,
+        /// this session, rather than one of the client's. What goes on the wire is what the relay
+        /// shows its watchers - ours and the client's alike, in the client's packets - so this is
+        /// the one place that can tell them apart: the host's own appraisal is not the player's.
+        /// </summary>
+        public bool IsOurs(uint sequence)
+        {
+            lock (_ours)
+                return _ours.Contains(sequence);
+        }
+
+        private void NoteOurs(uint sequence)
+        {
+            lock (_ours)
+            {
+                if (!_ours.Add(sequence))
+                    return;
+
+                _oursOrder.Enqueue(sequence);
+                while (_oursOrder.Count > RememberedOurs)
+                    _ours.Remove(_oursOrder.Dequeue());
+            }
+        }
+
+        private void ForgetOurs()
+        {
+            lock (_ours)
+            {
+                _ours.Clear();
+                _oursOrder.Clear();
+            }
+        }
 
         /// <summary>Messages of the client's that have been taken out of the stream.</summary>
         public int WithheldMessages { get; private set; }
@@ -268,6 +316,7 @@ namespace AC.Proxy
             _taking.Clear();
             _held.Clear();
             _letGo.Clear();
+            ForgetOurs();
             SessionResets++;
 
             lock (_queueGate)
@@ -365,6 +414,8 @@ namespace AC.Proxy
             _letGo.Clear();
             foreach (AcFragment fragment in state.LetGo)
                 _letGo.Enqueue(fragment);
+
+            ForgetOurs();
 
             InjectedMessages = state.InjectedMessages;
             WithheldMessages = state.WithheldMessages;
@@ -582,6 +633,7 @@ namespace AC.Proxy
                 used += cost;
                 Shift(_lastOriginalSequence, +1);
                 _lastEmittedSequence = sequence;
+                NoteOurs(sequence);
                 InjectedMessages++;
                 injected = true;
             }

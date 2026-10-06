@@ -171,8 +171,9 @@ namespace AC.Host.Tests
         }
 
         /// <summary>
-        /// Runs a host over <paramref name="messages"/> from a login, and takes what it would hand
-        /// over - written out and read back, as the file carries it.
+        /// Runs a host over <paramref name="messages"/> from a login, then the client's word that it
+        /// has finished entering the world, as it says once the login's messages are in; and takes
+        /// what it would hand over - written out and read back, as the file carries it.
         /// </summary>
         private static async Task<HandoverSnapshot> HandOverAfterAsync(IEnumerable<AcMessage> messages, bool acting = true)
         {
@@ -184,6 +185,7 @@ namespace AC.Host.Tests
             transport.Starts(SessionStart.Login);
             foreach (AcMessage message in messages)
                 transport.FromServer(message);
+            transport.FromClient(MacroTestHost.ClientEntered());
 
             HandoverSnapshot snapshot = await OnGameThreadAsync(before, () => before.CreateHandover(DateTimeOffset.UtcNow));
             return ThroughBytes(snapshot);
@@ -219,6 +221,24 @@ namespace AC.Host.Tests
             decal.Core.WorldFilter.CreateObject += (_, e) => decalHeard.Add($"created {e.New.Id:X8}");
             decal.Core.EchoFilter.ServerDispatch += (_, e) => decalHeard.Add($"dispatch {e.Message.Type:X4}");
 
+            // Virindi Reporter's luminance: its own, from the description it hears, counted from
+            // what it had at LoginComplete.
+            long luminance = 0;
+            long luminanceAtStart = -1;
+            decal.Core.MessageProcessed += (_, e) =>
+            {
+                if (e.Message.Type != Opcodes.GameEvent || e.Message.Value<int>("event") != GameEvents.PlayerDescription)
+                    return;
+
+                global::Decal.Adapter.MessageStruct qwords = e.Message.Struct("properties").Struct("qwords");
+                for (int i = 0; i < qwords.Count; i++)
+                {
+                    if (qwords.Struct(i).Value<int>("key") == 6)
+                        luminance = qwords.Struct(i).Value<long>("value");
+                }
+            };
+            decal.Core.CharacterFilter.LoginComplete += (_, _) => luminanceAtStart = luminance;
+
             host.OfferHandover(handover);
             await host.StartAsync();
 
@@ -235,7 +255,8 @@ namespace AC.Host.Tests
             // The server, then the character - named before it is described, as at a login - then
             // the character's own object, what it carries and wears, what is around it; its
             // enchantments; the messages the world was built from, as a login brings them, but for
-            // the server's word of welcome; and the character as a whole. Then the session goes on.
+            // the server's word of welcome, and the client's word that it had entered the world;
+            // and the character as a whole. Then the session goes on.
             string[] builtFrom =
             {
                 $"message {Opcodes.ServerName:X4}",
@@ -260,6 +281,7 @@ namespace AC.Host.Tests
             };
             expected.AddRange(Enumerable.Repeat("enchantment", enchantments));
             expected.AddRange(builtFrom);
+            expected.Add($"message {Opcodes.GameAction:X4}");
             expected.Add("character");
             expected.Add($"updated {Drudge:X8}");
             expected.Add($"message {Opcodes.UpdatePosition:X4}");
@@ -270,7 +292,7 @@ namespace AC.Host.Tests
             Assert.DoesNotContain($"message {Opcodes.ServerMessage:X4}", heard);
 
             // Decal's plugins hear a login: Login, every object, the login's messages through their
-            // ServerDispatch, then LoginComplete once all are described and heard.
+            // ServerDispatch, then LoginComplete on the client's word, retold after them as it came.
             Assert.Equal($"login {Player:X8}", decalHeard.First());
             Assert.Equal(5, decalHeard.Count(h => h.StartsWith("created", StringComparison.Ordinal)));
             int complete = decalHeard.IndexOf("complete");
@@ -278,6 +300,7 @@ namespace AC.Host.Tests
                 builtFrom.Select(m => m.Replace("message ", "dispatch ", StringComparison.Ordinal)),
                 decalHeard.Take(complete).Where(h => h.StartsWith("dispatch", StringComparison.Ordinal)));
             Assert.Equal(new[] { "complete", $"dispatch {Opcodes.UpdatePosition:X4}" }, decalHeard.Skip(complete));
+            Assert.Equal(36_200, luminanceAtStart);
 
             // The world is the one the host before had, and goes on.
             Assert.Equal("Example Server", host.World.ServerName);
@@ -402,6 +425,131 @@ namespace AC.Host.Tests
         }
 
         /// <summary>
+        /// Writes down what a Decal plugin reads of the character at Login and at LoginComplete -
+        /// Mag-Tools' HUD, made at LoginComplete, asks every second for the free slots of the pack
+        /// that is CharacterFilter.Id - and of the character's own object in the world filter.
+        /// </summary>
+        private static List<string> ReadAtLogin(DecalRuntime decal)
+        {
+            List<string> read = new List<string>();
+            global::Decal.Adapter.Wrappers.CharacterFilter character = decal.Core.CharacterFilter;
+            string Read(string when)
+                => $"{when}: {character.Id:X8} {character.Name}, status {character.LoginStatus}, level {character.Level}, xp {character.TotalXP}, "
+                    + $"burden {character.BurdenUnits}, {character.Server}; self {decal.Core.WorldFilter[character.Id]?.Name ?? "unknown"}";
+
+            character.Login += (_, e) => read.Add(Read($"login {e.Id:X8}"));
+            character.LoginComplete += (_, _) => read.Add(Read("complete"));
+            return read;
+        }
+
+        /// <summary>
+        /// A Decal plugin reading the character at Login - before LoginComplete - finds, after a host
+        /// restart, what it found at the login itself: the character's id and name, its level and
+        /// experience, and its own object. Carried on, the host names the character before it tells
+        /// of the character's object, as at a login; Decal's Login waits for the object, as Decal's
+        /// waited for the description that fills it.
+        /// </summary>
+        [Fact]
+        public async Task ADecalPluginReadingTheCharacterAtLoginFindsWhatItFoundAtTheLoginWhenTheSessionIsCarriedOn()
+        {
+            RelayStandIn first = new RelayStandIn();
+            HandoverSnapshot handover;
+            List<string> atLogin;
+            await using (GameHost before = new GameHost(first, new ListLog(), dataRoot: NewRoot()))
+            {
+                using DecalRuntime decal = new DecalRuntime(before);
+                atLogin = ReadAtLogin(decal);
+                await before.StartAsync();
+
+                first.Starts(SessionStart.Login);
+                foreach (AcMessage message in Login())
+                    first.FromServer(message);
+                first.FromClient(MacroTestHost.ClientEntered());
+
+                handover = ThroughBytes(await OnGameThreadAsync(before, () => before.CreateHandover(DateTimeOffset.UtcNow)));
+            }
+
+            string described = $"{Player:X8} Testchar I, status 1, level 275, xp 191226310247";
+            Assert.Equal(2, atLogin.Count);
+            Assert.StartsWith($"login {Player:X8}: {described}", atLogin[0], StringComparison.Ordinal);
+            Assert.EndsWith("Example Server; self Testchar I", atLogin[0], StringComparison.Ordinal);
+
+            RelayStandIn next = new RelayStandIn();
+            await using GameHost host = new GameHost(next, new ListLog(), dataRoot: NewRoot());
+            using DecalRuntime carriedOn = new DecalRuntime(host);
+            List<string> afterRestart = ReadAtLogin(carriedOn);
+            host.OfferHandover(handover);
+            await host.StartAsync();
+            next.Starts(SessionStart.UnderWay);
+            await DrainAsync(host);
+
+            Assert.Equal(atLogin, afterRestart);
+        }
+
+        /// <summary>
+        /// The player's own captures, handed over from their middle to a host with Decal running
+        /// over it: what a Decal plugin reads of the character at Login is what it reads at
+        /// LoginComplete - the character named, described and in the world filter. Captures are
+        /// never committed, so this skips without them (see <see cref="CaptureHandoverTests"/>).
+        /// </summary>
+        [SkippableTheory]
+        [InlineData("session.acap")]
+        [InlineData("session-readonly.acap")]
+        [InlineData("session-20260929-1118.acap")]
+        [InlineData("session-20260929-1208.acap")]
+        [InlineData("session-20260929-1227.acap")]
+        [InlineData("session-20260929-1245.acap")]
+        [InlineData("session-20260929-1256.acap")]
+        [InlineData("session-20260929-1558.acap")]
+        [InlineData("session-20260929-1708.acap")]
+        [InlineData("session-20260929-1934.acap")]
+        public async Task ACaptureCarriedOnFromItsMiddleHasDecalsLoginFindTheCharacterDescribed(string name)
+        {
+            string path = CaptureHandoverTests.FindCapture(name);
+            Skip.If(path == null, $"{name} is not on this machine; captures are never committed.");
+
+            List<CapturedDatagram> all = CaptureReader.Read(path).ToList();
+            int split = CaptureHandoverTests.SplitPoint(all, 0.5);
+            Skip.If(split < 0, $"{name} has nothing after its middle to carry on.");
+
+            CaptureTransport firstTransport = new CaptureTransport(all.Take(split).ToList());
+            HandoverSnapshot snapshot;
+            uint character;
+            await using (GameHost first = new GameHost(firstTransport, new ListLog(), dataRoot: NewRoot()))
+            {
+                await first.StartAsync();
+                await first.Ended.WaitAsync(TimeSpan.FromMinutes(2));
+                character = first.WorldState.Character.Id;
+                snapshot = first.CreateHandover(DateTimeOffset.UtcNow);
+            }
+
+            Skip.If(character == 0 || snapshot == null, $"{name} has no character in the world in its middle.");
+            snapshot.Relay = firstTransport.SaveState();
+
+            // Only the packet that shows the session going on, so that what Decal hears is the
+            // carrying on itself.
+            CaptureTransport nextTransport = new CaptureTransport(all.Skip(split).Take(1).ToList());
+            nextTransport.Resume(snapshot.Relay);
+            await using GameHost carried = new GameHost(nextTransport, new ListLog(), dataRoot: NewRoot());
+            using DecalRuntime decal = new DecalRuntime(carried);
+            List<string> read = ReadAtLogin(decal);
+            carried.OfferHandover(snapshot);
+            await carried.StartAsync();
+            await carried.Ended.WaitAsync(TimeSpan.FromMinutes(2));
+
+            Assert.NotNull(carried.CarriedOnFrom);
+            Skip.If(read.Count < 2, $"{name}'s first half has no login whose word that the client had entered the world is retold.");
+
+            static string Reading(string line) => line.Substring(line.IndexOf(": ", StringComparison.Ordinal) + 2);
+            Assert.False(string.IsNullOrEmpty(carried.Character.Name));
+            Assert.StartsWith($"login {character:X8}: {character:X8} {carried.Character.Name}, status 1, level ", read[0], StringComparison.Ordinal);
+            Assert.DoesNotContain(", level 0,", read[0], StringComparison.Ordinal);
+            Assert.EndsWith($"; self {carried.Character.Name}", read[0], StringComparison.Ordinal);
+            Assert.StartsWith("complete: ", read[1], StringComparison.Ordinal);
+            Assert.Equal(Reading(read[1]), Reading(read[0]));
+        }
+
+        /// <summary>
         /// An enchantment says what it had left when the server sent it, and plugins count down from
         /// when they hear of it - which, carried on, is now. So it is aged by the time since.
         /// </summary>
@@ -521,8 +669,42 @@ namespace AC.Host.Tests
             Assert.Null(host.World.ServerName);
             Assert.Null(host.CarriedOnFrom);
             Assert.False(host.JoinedMidSession);
+            Assert.Equal("let go: the client began a new login", await OnGameThreadAsync(host, () => host.HandoverFate));
             lock (log.Lines)
                 Assert.Contains(log.Lines, l => l.Contains("new login, so the session the host before this one handed over is not carried on"));
+        }
+
+        /// <summary>
+        /// Taken in time, but the game was not heard from until it was too old to carry on: the host
+        /// joined in the middle after all, and says that it was handed something and let it go - not
+        /// that nothing was handed over, which would send whoever reads the log looking for a file.
+        /// </summary>
+        [Fact]
+        public async Task AHandoverTheGameIsHeardFromTooLateForIsLetGoAndTheLogSaysSo()
+        {
+            HandoverSnapshot handover = await HandOverAfterAsync(Login());
+            handover.WrittenAt = DateTimeOffset.UtcNow - HandoverSnapshot.MaxAge - TimeSpan.FromSeconds(30);
+
+            RelayStandIn transport = new RelayStandIn();
+            ListLog log = new ListLog();
+            await using GameHost host = new GameHost(transport, log, dataRoot: NewRoot());
+            host.OfferHandover(handover);
+            Assert.Equal("to be carried on once the game is heard from", host.HandoverFate);
+            await host.StartAsync();
+
+            transport.Starts(SessionStart.UnderWay);
+            transport.FromServer(Position(Drudge, 12));
+            await DrainAsync(host);
+
+            Assert.True(host.JoinedMidSession);
+            Assert.Null(host.CarriedOnFrom);
+            Assert.StartsWith("let go: the game was first heard from 15", await OnGameThreadAsync(host, () => host.HandoverFate));
+            lock (log.Lines)
+            {
+                Assert.Contains(log.Lines, l => l.StartsWith("WARN The host joined a session already under way, and the session the host before it handed over at", StringComparison.Ordinal)
+                    && l.Contains("s old by the time the game was first heard from"));
+                Assert.DoesNotContain(log.Lines, l => l.Contains("nothing was handed over"));
+            }
         }
 
         // ------------------------------------------------------------------- joining with nothing
@@ -628,7 +810,8 @@ namespace AC.Host.Tests
             string root = NewRoot();
             RelayStandIn before = new RelayStandIn();
             HostRuntimeOptions first = Isolated(root, before);
-            HostRuntime stopping = new HostRuntime(first, new ListLog());
+            ListLog stoppingLog = new ListLog();
+            HostRuntime stopping = new HostRuntime(first, stoppingLog);
             await stopping.StartAsync();
 
             before.Starts(SessionStart.Login);
@@ -641,12 +824,20 @@ namespace AC.Host.Tests
             Assert.Equal(Path.Combine(root, "data", "handover-9100.bin"), path);
             Assert.True(File.Exists(path));
 
+            // The whole path written, in the log of the host that wrote it.
+            lock (stoppingLog.Lines)
+                Assert.Contains(stoppingLog.Lines, l => l.StartsWith($"INFO Handed the session over in {path} (", StringComparison.Ordinal));
+
             RelayStandIn after = new RelayStandIn();
             HostRuntimeOptions second = Isolated(root, after);
             ListLog log = new ListLog();
             await using HostRuntime starting = new HostRuntime(second, log);
             Assert.False(File.Exists(path));
             Assert.False(starting.Host.ActionsAllowed);
+
+            // And the same path, in the log of the host that took it.
+            lock (log.Lines)
+                Assert.Contains(log.Lines, l => l.StartsWith("INFO The host before this one handed over the session", StringComparison.Ordinal) && l.Contains($", in {path} ("));
 
             await starting.StartAsync();
             after.Starts(SessionStart.UnderWay);
@@ -655,19 +846,174 @@ namespace AC.Host.Tests
             Assert.Contains("server     Example Server", status);
             Assert.Contains("character  Testchar I", status);
             Assert.Contains("session    carried on from the host that stopped at", status);
+            Assert.Contains($"handover   taken from {path}, written at ", status);
+            Assert.Contains("message(s)): carried on", status);
             Assert.Contains("acting     allowed", status);
             Assert.Contains("Diamond", await ControlPipe.SendAsync("find Diamond", second.ControlPipeName));
         }
 
         [Fact]
-        public async Task AHostThatSawNoSessionLeavesNothing()
+        public async Task AHostThatSawNoSessionLeavesNothingAndSaysSo()
         {
             string root = NewRoot();
-            HostRuntime runtime = new HostRuntime(Isolated(root, new RelayStandIn()), new ListLog());
+            ListLog log = new ListLog();
+            HostRuntime runtime = new HostRuntime(Isolated(root, new RelayStandIn()), log);
             await runtime.StartAsync();
             await runtime.DisposeAsync();
 
             Assert.False(File.Exists(runtime.HandoverPath));
+            lock (log.Lines)
+                Assert.Contains($"INFO Nothing was handed over in {runtime.HandoverPath}: no session was going on.", log.Lines);
+        }
+
+        /// <summary>
+        /// A host that finds nothing says exactly where it looked and what the folder holds instead:
+        /// set beside the path the host before it wrote to, that tells a file written somewhere else,
+        /// or out of this host's sight, from a file never written.
+        /// </summary>
+        [Fact]
+        public async Task AHostThatFindsNothingHandedOverSaysWhereItLookedAndWhatIsThere()
+        {
+            string root = NewRoot();
+            string data = Path.Combine(root, "data");
+            Directory.CreateDirectory(Path.Combine(data, "logs"));
+            File.WriteAllText(Path.Combine(data, "handover-9200.bin"), "left for another host's ports");
+
+            RelayStandIn transport = new RelayStandIn();
+            HostRuntimeOptions options = Isolated(root, transport);
+            ListLog log = new ListLog();
+            await using HostRuntime runtime = new HostRuntime(options, log);
+            string path = Path.Combine(data, "handover-9100.bin");
+            Assert.Equal(path, runtime.HandoverPath);
+
+            lock (log.Lines)
+                Assert.Contains($"INFO No session was handed over: there is nothing at {path}. {data} holds handover-9200.bin, logs.", log.Lines);
+
+            // Another port's handover is not this host's to take.
+            Assert.True(File.Exists(Path.Combine(data, "handover-9200.bin")));
+
+            await runtime.StartAsync();
+            transport.Starts(SessionStart.UnderWay);
+            transport.FromServer(Position(Drudge, 10));
+
+            string status = await ControlPipe.SendAsync("status", options.ControlPipeName);
+            Assert.Contains($"handover   none at {path}{Environment.NewLine}", status);
+            Assert.Contains("session    joined while you were in the world", status);
+        }
+
+        /// <summary>
+        /// A file that does not read as a handover - cut short, or with a length or an address that
+        /// makes no sense - is said to be unreadable and deleted, and the host starts as with none:
+        /// one bad file must never keep the Agent from starting, at this start or the next.
+        /// </summary>
+        [Fact]
+        public async Task AHandoverThatDoesNotReadAsOneIsDeletedAndTheHostStartsAnyway()
+        {
+            string root = NewRoot();
+            RelayStandIn transport = new RelayStandIn();
+            HostRuntimeOptions options = Isolated(root, transport);
+            string path = HandoverSnapshot.PathIn(options.DataDirectory, options.Proxy.ListenPort);
+            File.WriteAllBytes(EnsureFolder(path), Garbled(options.Proxy));
+
+            ListLog log = new ListLog();
+            await using HostRuntime runtime = new HostRuntime(options, log);
+            Assert.False(File.Exists(path));
+            lock (log.Lines)
+                Assert.Contains(log.Lines, l => l.StartsWith($"INFO The session handed over in {path} could not be read (", StringComparison.Ordinal));
+
+            await runtime.StartAsync();
+            string status = await ControlPipe.SendAsync("status", options.ControlPipeName);
+            Assert.Contains($"handover   not taken: The session handed over in {path} could not be read (", status);
+        }
+
+        private static string EnsureFolder(string path)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            return path;
+        }
+
+        /// <summary>A handover written whole for <paramref name="relay"/>, with the length of its first string made nonsense.</summary>
+        private static byte[] Garbled(ProxyOptions relay)
+        {
+            HandoverSnapshot snapshot = new HandoverSnapshot { WrittenAt = DateTimeOffset.UtcNow };
+            snapshot.SetEndpoints(relay);
+            using MemoryStream stream = new MemoryStream();
+            snapshot.Write(stream);
+            byte[] bytes = stream.ToArray();
+
+            // After the magic, the format and the time: the listen address's length, as seven-bit
+            // groups that never end.
+            for (int i = 20; i < 25; i++)
+                bytes[i] = 0xFF;
+            return bytes;
+        }
+
+        /// <summary>
+        /// The Decal Agent updated with the player in the world, as tools\update-agent.ps1 does it:
+        /// the session left in the data folder by the Agent that stopped, a few seconds old, and an
+        /// Agent's host built exactly as AgentForm builds one - the real relay on its own ports, the
+        /// overlay served, acting off - taking it up before it relays anything. The copies the host
+        /// before it ran its plugins from, in running, are cleared in the same breath; a host that
+        /// does neither is not looking at the folder the one before it wrote to.
+        /// </summary>
+        [Fact]
+        public async Task AnAgentStartedOnTheSamePortsTakesUpWhatTheOneBeforeItLeft()
+        {
+            string root = NewRoot();
+            string data = Path.Combine(root, "data");
+            int port = HostRuntimeTests.FreePortPair();
+            int serverPort = HostRuntimeTests.FreePortPair();
+            while (Math.Abs(serverPort - port) < 2)
+                serverPort = HostRuntimeTests.FreePortPair();
+
+            HostRuntimeOptions options = new HostRuntimeOptions
+            {
+                Proxy = new ProxyOptions { ServerHost = "127.0.0.1", ServerPort = serverPort, ListenPort = port },
+                PluginDirectory = Path.Combine(root, "plugins"),
+                DataDirectory = data,
+                EnableActions = false,
+                Overlay = true,
+                NoDat = true,
+                ControlPipeName = "achost-test-control-" + Guid.NewGuid().ToString("N"),
+                OverlayPipeName = "achost-test-overlay-" + Guid.NewGuid().ToString("N"),
+            };
+
+            // What the Agent that stopped left: its session, written seconds ago for these ports,
+            // and the folder its plugins ran from, under a process id no process has.
+            HandoverSnapshot left = await HandOverAfterAsync(Login());
+            left.SetEndpoints(options.Proxy);
+            left.WrittenAt = DateTimeOffset.UtcNow.AddSeconds(-4);
+            string path = HandoverSnapshot.PathIn(data, port);
+            left.Save(path);
+            string oldCopies = Path.Combine(data, "running", "2147483644", "Counting.Plugin-0123456789ab");
+            Directory.CreateDirectory(oldCopies);
+            File.WriteAllText(Path.Combine(oldCopies, "Counting.Plugin.pdb"), "a copy");
+
+            ListLog log = new ListLog();
+            HostRuntime runtime = new HostRuntime(options, log);
+            Assert.IsType<ProxyTransport>(runtime.Transport);
+            Assert.True(runtime.HandsOver);
+            Assert.Equal(path, runtime.HandoverPath);
+            Assert.False(File.Exists(path));
+            Assert.False(Directory.Exists(Path.Combine(data, "running", "2147483644")));
+            lock (log.Lines)
+                Assert.Contains(log.Lines, l => l.StartsWith("INFO The host before this one handed over the session", StringComparison.Ordinal) && l.Contains($", in {path} ({left.Journal.Count} message(s))"));
+
+            await runtime.StartAsync();
+            string status = await ControlPipe.SendAsync("status", options.ControlPipeName);
+            Assert.Contains($"handover   taken from {path}, written at {left.WrittenAt.ToLocalTime():HH:mm:ss} ({left.Journal.Count} message(s)): to be carried on once the game is heard from", status);
+
+            // Stopped again before the game was heard from - the update run twice, say - it hands
+            // on what it was handed, as it came: the session is not lost between two restarts.
+            await runtime.DisposeAsync();
+            Assert.True(File.Exists(path));
+            lock (log.Lines)
+                Assert.Contains(log.Lines, l => l.StartsWith($"INFO Handed on the session the host before this one handed over at {left.WrittenAt.ToLocalTime():HH:mm:ss}, never taken up", StringComparison.Ordinal));
+
+            HandoverSnapshot handedOn = HandoverSnapshot.Take(path, options.Proxy, DateTimeOffset.UtcNow, out string refusal);
+            Assert.Null(refusal);
+            Assert.Equal(left.WrittenAt, handedOn.WrittenAt);
+            Assert.Equal(left.Journal.Count, handedOn.Journal.Count);
         }
 
         [Fact]
@@ -772,6 +1118,40 @@ namespace AC.Host.Tests
             File.WriteAllText(path, "not a handover");
             Assert.Null(HandoverSnapshot.Take(path, relay, now, out refusal));
             Assert.Contains("could not be read", refusal);
+            Assert.False(File.Exists(path));
+
+            // A length that never ends, which the reader says in a way of its own.
+            File.WriteAllBytes(path, Garbled(relay));
+            Assert.Null(HandoverSnapshot.Take(path, relay, now, out refusal));
+            Assert.Contains("could not be read (A handover that does not read as one", refusal);
+            Assert.False(File.Exists(path));
+
+            // Nothing there, and a folder that is not there either: nothing, said nothing about.
+            Assert.Null(HandoverSnapshot.Take(Path.Combine(NewRoot(), "handover-9100.bin"), relay, now, out refusal));
+            Assert.Null(refusal);
+        }
+
+        /// <summary>
+        /// A handover another program has open - a scanner looking at a file just written - is read
+        /// all the same: only a file not found is "nothing handed over".
+        /// </summary>
+        [Fact]
+        public void AHandoverSomethingElseHasOpenIsTakenAllTheSame()
+        {
+            ProxyOptions relay = new ProxyOptions { ServerHost = "127.0.0.1", ServerPort = 9000, ListenPort = 9100 };
+            string path = HandoverSnapshot.PathIn(NewRoot(), relay.ListenPort);
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            HandoverSnapshot snapshot = new HandoverSnapshot { WrittenAt = now };
+            snapshot.SetEndpoints(relay);
+            snapshot.Save(path);
+
+            HandoverSnapshot taken;
+            string refusal;
+            using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+                taken = HandoverSnapshot.Take(path, relay, now, out refusal);
+
+            Assert.Null(refusal);
+            Assert.NotNull(taken);
             Assert.False(File.Exists(path));
         }
 
@@ -879,7 +1259,7 @@ namespace AC.Host.Tests
     /// </remarks>
     public class CaptureHandoverTests
     {
-        private static string FindCapture(string name)
+        internal static string FindCapture(string name)
         {
             for (DirectoryInfo folder = new DirectoryInfo(AppContext.BaseDirectory); folder != null; folder = folder.Parent)
             {
@@ -892,7 +1272,7 @@ namespace AC.Host.Tests
         }
 
         /// <summary>The first datagram at or after <paramref name="fraction"/> of the way through that is not part of a login.</summary>
-        private static int SplitPoint(IReadOnlyList<CapturedDatagram> datagrams, double fraction)
+        internal static int SplitPoint(IReadOnlyList<CapturedDatagram> datagrams, double fraction)
         {
             for (int i = (int)(datagrams.Count * fraction); i < datagrams.Count; i++)
             {
@@ -1038,6 +1418,10 @@ namespace AC.Host.Tests
             nameof(WorldObject.LastSeen),
             nameof(WorldObject.ArrivalOrder),
             nameof(CharacterState.Object),
+
+            // A count whose movement alone means anything - the client answering held keys - and
+            // which a host carried on starts afresh, as the keys do.
+            nameof(CharacterState.ClientReports),
             nameof(Enchantment.StartTime),
             nameof(Enchantment.RemainingWhenSent),
             "GameData",

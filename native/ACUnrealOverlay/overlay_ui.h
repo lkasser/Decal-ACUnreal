@@ -31,7 +31,20 @@ namespace overlay {
 // window alone, and which windows are open is remembered in here, not by the caller, as
 // the player's arrangement of the screen. The caller's hotkey is the only thing that
 // hides the lot.
+//
+// On a display too small to hold a window - a minimized game's, which is 0 x 0 - it submits
+// nothing either, and so moves nothing: a window kept on a screen of no size goes to its
+// corner, and ImGui would save it there. The caller should not draw such a frame at all.
 std::vector<Command> DrawOverlay(const State& state, bool& visible);
+
+// The least width and height, in pixels, of a display the overlay draws on. Less is a minimized
+// window, or one Unreal has given 8 x 8 back buffers while it is minimized.
+constexpr float kLeastDisplaySide = 100.0f;
+
+// Whether a display, or back buffers, of this size are drawn on.
+inline bool DisplayUsable(float width, float height) {
+    return width >= kLeastDisplaySide && height >= kLeastDisplaySide;
+}
 
 // Once, after the ImGui context is made and before its first frame: keeps Decal's bar as the
 // player set it - compact or expanded, which edge, how long - in the ini.

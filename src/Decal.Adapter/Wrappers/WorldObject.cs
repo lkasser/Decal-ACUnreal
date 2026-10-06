@@ -60,14 +60,60 @@ namespace Decal.Adapter.Wrappers
         /// <summary>When it was last appraised. The host keeps no such time, so 0.</summary>
         public int LastIdTime => 0;
 
-        public int SpellCount => _obj.SpellIds.Count;
+        /// <summary>
+        /// How many spells the object casts - its own, as its appraisal lists them - not counting
+        /// those cast on it (<see cref="ActiveSpellCount"/>).
+        /// </summary>
+        /// <remarks>
+        /// An appraisal's spell book holds both: the object's spells, and - with the top bit set -
+        /// the spells on it now: a worn piece's Impenetrability cast on itself, a weapon's share of
+        /// its wielder's auras. Decal's world filter kept them apart, the second as active spells
+        /// without the bit, so every id a plugin was given was a spell's. Mag-Tools looks each one
+        /// up in the portal file's spell table and reads its name, with no check for none: given a
+        /// marked id, every worn piece of armour it was shown threw.
+        /// </remarks>
+        public int SpellCount => CountSpells(active: false);
 
-        /// <summary>Spells cast on the item itself. The host does not track those, so none.</summary>
-        public int ActiveSpellCount => 0;
+        /// <summary>How many spells are on the object now, cast on it rather than by it.</summary>
+        public int ActiveSpellCount => CountSpells(active: true);
 
-        public int Spell(int index) => index >= 0 && index < _obj.SpellIds.Count ? unchecked((int)_obj.SpellIds[index]) : 0;
+        /// <summary>One of the spells the object casts, by its place among them; 0 past the end.</summary>
+        public int Spell(int index) => SpellAt(index, active: false);
 
-        public int ActiveSpell(int index) => 0;
+        /// <summary>One of the spells on the object now, by its place among them, its mark taken off; 0 past the end.</summary>
+        public int ActiveSpell(int index) => SpellAt(index, active: true);
+
+        /// <summary>The top bit an appraisal sets on a spell that is on the object rather than one it casts.</summary>
+        private const uint ActiveSpellMark = 0x80000000;
+
+        private int CountSpells(bool active)
+        {
+            int count = 0;
+            foreach (uint id in _obj.SpellIds)
+            {
+                if (((id & ActiveSpellMark) != 0) == active)
+                    count++;
+            }
+
+            return count;
+        }
+
+        private int SpellAt(int index, bool active)
+        {
+            if (index < 0)
+                return 0;
+
+            foreach (uint id in _obj.SpellIds)
+            {
+                if (((id & ActiveSpellMark) != 0) != active)
+                    continue;
+
+                if (index-- == 0)
+                    return unchecked((int)(id & ~ActiveSpellMark));
+            }
+
+            return 0;
+        }
 
         public List<int> BoolKeys => _obj.Bools.Keys.Select(k => unchecked((int)k)).ToList();
 
@@ -164,7 +210,8 @@ namespace Decal.Adapter.Wrappers
                 LongValueKey.CreateFlags2 => _obj.WeenieFlags2,
                 LongValueKey.Category => _obj.ItemType,
                 LongValueKey.Behavior => _obj.DescriptionFlags,
-                LongValueKey.SpellCount => (uint)_obj.SpellIds.Count,
+                LongValueKey.SpellCount => (uint)SpellCount,
+                LongValueKey.ActiveSpellCount => (uint)ActiveSpellCount,
                 LongValueKey.PhysicsDataFlags => _obj.PhysicsFlags,
                 LongValueKey.IconOverlay => _obj.IconOverlay,
                 LongValueKey.IconUnderlay => _obj.IconUnderlay,

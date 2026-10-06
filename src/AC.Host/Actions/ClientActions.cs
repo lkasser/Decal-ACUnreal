@@ -183,6 +183,46 @@ namespace AC.Host.Actions
             });
 
         /// <summary>
+        /// Hands an item to a player or NPC. Payload: the target, the item, then the amount as a
+        /// signed word.
+        /// </summary>
+        /// <remarks>
+        /// No recorded session gives anything, so this is ACE's handler's read order
+        /// (GameActionGiveObjectRequest: two words and an int), the target first. ACE walks the
+        /// character to the target and refuses an amount of zero or less, or more than the stack.
+        /// </remarks>
+        public Task<bool> GiveAsync(uint objectId, uint targetId, int amount)
+            => SendAsync(GameActions.GiveObjectRequest, w => w.UInt32(targetId).UInt32(objectId).Int32(amount));
+
+        /// <summary>Asks a player to join the fellowship. Payload: the player's id, as ACE's handler reads it.</summary>
+        /// <remarks>
+        /// ACE looks the player up among those online and refuses, in chat, one who is not, who is
+        /// in a fellowship already, or who declines; and a recruit by anyone but the leader of a
+        /// fellowship that is not open.
+        /// </remarks>
+        public Task<bool> FellowshipRecruitAsync(uint playerId)
+            => SendAsync(GameActions.FellowshipRecruit, w => w.UInt32(playerId));
+
+        /// <summary>
+        /// Leaves the fellowship, or disbands it. Payload: a word, 1 to disband - ACE's
+        /// FellowshipQuit, which disbands only for the leader and otherwise just leaves.
+        /// </summary>
+        public Task<bool> FellowshipQuitAsync(bool disband)
+            => SendAsync(GameActions.FellowshipQuit, w => w.UInt32(disband ? 1u : 0u));
+
+        /// <summary>Dismisses a member. Payload: the member's id.</summary>
+        public Task<bool> FellowshipDismissAsync(uint playerId)
+            => SendAsync(GameActions.FellowshipDismiss, w => w.UInt32(playerId));
+
+        /// <summary>Hands the leadership to another member. Payload: the member's id.</summary>
+        public Task<bool> FellowshipAssignLeaderAsync(uint playerId)
+            => SendAsync(GameActions.FellowshipAssignNewLeader, w => w.UInt32(playerId));
+
+        /// <summary>Opens the fellowship to recruiting by any member, or closes it. Payload: a word, 1 for open.</summary>
+        public Task<bool> FellowshipSetOpenAsync(bool open)
+            => SendAsync(GameActions.FellowshipChangeOpenness, w => w.UInt32(open ? 1u : 0u));
+
+        /// <summary>
         /// Changes stance. Casting needs Magic; swinging needs Melee. The server refuses
         /// actions that do not match the stance, so this usually comes first.
         /// </summary>
@@ -286,7 +326,8 @@ namespace AC.Host.Actions
 
         private static void WriteMotionState(PayloadWriter w, ClientMotionState motion)
         {
-            w.UInt32(motion.Flags);
+            int actions = motion.Actions?.Count ?? 0;
+            w.UInt32((motion.Flags & MotionFlags.Fields) | ((uint)actions << MotionFlags.ActionCountShift));
 
             if ((motion.Flags & MotionFlags.CurrentHoldKey) != 0) w.UInt32(motion.CurrentHoldKey);
             if ((motion.Flags & MotionFlags.CurrentStyle) != 0) w.UInt32(motion.CurrentStyle);
@@ -299,23 +340,121 @@ namespace AC.Host.Actions
             if ((motion.Flags & MotionFlags.TurnCommand) != 0) w.UInt32(motion.TurnCommand);
             if ((motion.Flags & MotionFlags.TurnHoldKey) != 0) w.UInt32(motion.TurnHoldKey);
             if ((motion.Flags & MotionFlags.TurnSpeed) != 0) w.Single(motion.TurnSpeed);
+
+            for (int i = 0; i < actions; i++)
+            {
+                ClientMotionAction action = motion.Actions[i];
+                w.UInt16(action.Command).UInt16(action.Stamp).Single(action.Speed);
+            }
         }
+
+        /// <summary>The client's count of the one-off motions it has begun, which stamps each.</summary>
+        private ushort _actionStamp;
+
+        /// <summary>
+        /// Plays one of the client's chat emotes - "*wave*", "*dance*" - as the client plays it: a
+        /// MoveToState with the emote's motion command in it, standing where the client last said
+        /// it stood. A one-off motion (a wave, 0x10000000 set) goes as an action after the fields;
+        /// a lasting one (dancing, sitting, 0x40000000 set) as the forward command, until the
+        /// character next moves.
+        /// </summary>
+        /// <remarks>
+        /// The client's own motion interpreter put an emote there (CMotionInterp::DoMotion, then
+        /// the raw state's ApplyMotion), and ACE reads it from there: an action only when it is a
+        /// soul emote at speed 1, and a lasting one as the forward command it shows everyone. ACE
+        /// plays the motion and sends it to everyone in sight - the character's own client too,
+        /// but marked as the client's own doing, which the client may not play, since it did not
+        /// begin it. The caller checks the stance first, as the client did.
+        /// </remarks>
+        public Task<bool> EmoteAsync(uint motionCommand)
+        {
+            ClientMotionState last = _world?.Character.Motion;
+            ClientMotionState motion = WithStyle(new ClientMotionState
+            {
+                Flags = MotionFlags.CurrentHoldKey | MotionFlags.CurrentStyle,
+                CurrentHoldKey = last != null && (last.Flags & MotionFlags.CurrentHoldKey) != 0 ? last.CurrentHoldKey : 1,
+            });
+
+            if ((motionCommand & LastingMotion) != 0)
+            {
+                motion.Flags |= MotionFlags.ForwardCommand;
+                motion.ForwardCommand = motionCommand;
+            }
+            else
+            {
+                _actionStamp = (ushort)((_actionStamp + 1) & 0x7FFF);
+                motion.Actions.Add(new ClientMotionAction((ushort)motionCommand, (ushort)(_actionStamp | ClientBegan), 1f));
+            }
+
+            return MoveAsync(motion);
+        }
+
+        /// <summary>A motion command's class bit for a lasting state - sitting, dancing - rather than a one-off action.</summary>
+        private const uint LastingMotion = 0x40000000;
+
+        /// <summary>An action stamp's top bit: the client began it.</summary>
+        private const ushort ClientBegan = 0x8000;
 
         /// <summary>
         /// Sends what the game client sends for one of its chat-box commands
         /// (<see cref="ClientCommands.Parse"/>): a game action, or a whole message for the
-        /// server's chat rooms. False for a line that is not something to send.
+        /// server's chat rooms. For a chat emote this is its words, the SoulEmote; its motion is
+        /// <see cref="EmoteAsync"/>'s. False for a line that is not something to send.
         /// </summary>
         public async Task<bool> SendCommandAsync(ClientCommand command)
         {
             if (command == null) throw new ArgumentNullException(nameof(command));
 
-            if (command.Kind == ClientCommandKind.Action)
+            if (command.Kind == ClientCommandKind.Action || command.Kind == ClientCommandKind.Emote)
                 return await SendAsync(command.Type, w => w.Bytes(command.Fields)).ConfigureAwait(false);
 
             if (command.Kind != ClientCommandKind.Message)
                 return false;
 
+            return await SendMessageAsync(command.Type, command.Fields).ConfigureAwait(false);
+        }
+
+        // ------------------------------------------------------------------- the character list
+
+        /// <summary>
+        /// What logs the character out and brings one into the world for <see cref="LogOutAsync"/>
+        /// and <see cref="EnterWorldAsync"/>: which way, when, and whether it worked. Set by the
+        /// host; without it the logoff goes as the bare message and entering is refused.
+        /// </summary>
+        public SessionControl Session { get; set; }
+
+        /// <summary>Logs the character out to the character list. See <see cref="IGameActions.LogOutAsync"/>.</summary>
+        public Task<bool> LogOutAsync()
+            => Session != null ? Session.LogOutAsync() : SendLogOffAsync();
+
+        /// <summary>Enters the world as one of the account's characters. See <see cref="IGameActions.EnterWorldAsync"/>.</summary>
+        public Task<bool> EnterWorldAsync(uint characterId)
+        {
+            if (Session != null)
+                return Session.EnterWorldAsync(characterId);
+
+            _log.Warn("Cannot enter the world from here: nothing is watching the character list.");
+            Refused++;
+            return Task.FromResult(false);
+        }
+
+        /// <summary>
+        /// The client's own request to log off, as captured: CharacterLogOff, 0xF653, carrying
+        /// nothing. The server plays the logging-out motion and, about six seconds later, answers
+        /// with the same opcode, the character list and its name. Not a game action: it travels on
+        /// its own, as the client sends it.
+        /// </summary>
+        public Task<bool> SendLogOffAsync()
+            => SendMessageAsync(Opcodes.CharacterLogOff, Array.Empty<byte>());
+
+        // Entering the world has no message here: AC:Unreal takes no login it did not ask for -
+        // its character select stays up - so the character select itself is clicked
+        // (SessionControl), and the client sends CharacterEnterWorldRequest and CharacterEnterWorld
+        // as it always does.
+
+        /// <summary>Sends a whole message of the client's - not a game action - when acting is allowed.</summary>
+        private async Task<bool> SendMessageAsync(uint opcode, byte[] payload)
+        {
             if (!IsAvailable)
             {
                 Refused++;
@@ -324,13 +463,13 @@ namespace AC.Host.Actions
 
             try
             {
-                await _transport.SendAsync(AcMessage.Create(command.Type, command.Fields)).ConfigureAwait(false);
+                await _transport.SendAsync(AcMessage.Create(opcode, payload)).ConfigureAwait(false);
                 Sent++;
                 return true;
             }
             catch (Exception ex)
             {
-                _log.Error($"Could not send message 0x{command.Type:X4}.", ex);
+                _log.Error($"Could not send message 0x{opcode:X4}.", ex);
                 return false;
             }
         }

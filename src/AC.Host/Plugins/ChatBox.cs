@@ -128,6 +128,7 @@ namespace AC.Host.Plugins
             if (_host.DispatchChatCommand(text, from))
                 return ChatCommandOutcome.Plugin;
 
+            IGameData data = _world.GameData;
             ClientCommand command = ClientCommands.Parse(text, new ClientCommandContext
             {
                 PlayerId = _world.Character.Id,
@@ -135,6 +136,8 @@ namespace AC.Host.Plugins
                 LastTellTo = _world.LastTellTo,
                 Rooms = _world.TurbineChannels,
                 Cookie = ++_cookie,
+                ChatEmotes = data != null && data.IsAvailable ? data.GetChatEmote : null,
+                Gender = _world.Character.Object != null && _world.Character.Object.Ints.TryGetValue(GenderProperty, out int gender) ? gender : 0,
             });
 
             switch (command.Kind)
@@ -156,8 +159,35 @@ namespace AC.Host.Plugins
             if (command.TellTarget != null)
                 _world.LastTellTo = command.TellTarget;
 
+            if (command.Kind == ClientCommandKind.Emote)
+                Emote(actions, command);
+
             _ = actions.SendCommandAsync(command);
             return ChatCommandOutcome.Sent;
+        }
+
+        /// <summary>The server's Gender property, which an emote's "%p" goes by.</summary>
+        private const uint GenderProperty = 113;
+
+        /// <summary>
+        /// A chat emote's motion, as the client played it before sending its words: refused in its
+        /// own words outside the NonCombat stance or while not standing, as the client refused it,
+        /// and otherwise sent in a MoveToState. The words go either way.
+        /// </summary>
+        private void Emote(ClientActions actions, ClientCommand command)
+        {
+            if (command.Motion == 0)
+                return;
+
+            string refusal = ChatEmoteCommands.Refusal(_world.Character.Motion);
+            if (refusal != null)
+            {
+                _log.Info($"Emote not played: {refusal}.");
+                _host.ShowInGame(refusal);
+                return;
+            }
+
+            _ = actions.EmoteAsync(command.Motion);
         }
     }
 }

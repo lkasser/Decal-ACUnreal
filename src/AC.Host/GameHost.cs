@@ -142,18 +142,32 @@ namespace AC.Host
                 ForgetCharacterInJournal();
                 Raise(LoggedOff, e);
             };
+            _world.LoggingOff += (s, e) =>
+            {
+                // Nothing is walked out of a logoff: the client would only ask again.
+                _input?.ReleaseAll();
+                RaisePlain(LoggingOff);
+            };
 
             // A transport that can send gets real actions; one that cannot gets a
             // stand-in that refuses politely, so a plugin written against the real
             // thing runs unchanged over a capture.
-            Actions = _transport.CanSend
-                ? new AC.Host.Actions.ClientActions(_transport, _log, _world) { Allowed = () => _actionsAllowed, Appraising = _appraisals.HostAsked }
-                : new UnavailableActions(_log);
+            if (_transport.CanSend)
+            {
+                AC.Host.Actions.ClientActions actions = new AC.Host.Actions.ClientActions(_transport, _log, _world) { Allowed = () => _actionsAllowed, Appraising = _appraisals.HostAsked };
+                Session = new AC.Host.Actions.SessionControl(actions, _transport, _world, _log, () => InputKeys, () => GameWindow, () => ClientUiScale);
+                actions.Session = Session;
+                Actions = actions;
+            }
+            else
+            {
+                Actions = new UnavailableActions(_log);
+            }
 
             // The answers to the host's own appraisals are kept from the client, whose examine
             // panel would open for each.
             if (_transport is IClientboundFilter clientbound)
-                clientbound.WithholdFromClient = _appraisals.Withhold;
+                clientbound.WithholdFromClient = (opcode, payload) => _appraisals.Withhold(opcode, payload);
 
             // Lines run as though typed, and lines the player types for a plugin, which the
             // relay keeps from the server.
@@ -168,11 +182,41 @@ namespace AC.Host
         private readonly ChatBox _chatBox;
 
         /// <summary>
+        /// Logging the character out to the character list and bringing one into the world - for
+        /// plugins, Decal's Hooks.Logout and <c>achost ctl logout</c> / <c>login</c> - or null when the
+        /// transport cannot send. Game thread only.
+        /// </summary>
+        public AC.Host.Actions.SessionControl Session { get; }
+
+        /// <summary>
         /// Runs a line as though the player had typed it into the game's chat box: offered to
         /// the plugins that take commands, then sent as the action the game client itself would
         /// have sent for it. Game thread only.
         /// </summary>
         public ChatCommandOutcome RunChatCommand(string text, IPlugin from = null) => _chatBox.Run(text, from);
+
+        /// <summary>
+        /// Puts a row on every status HUD a plugin shows (<see cref="IStatusRows"/>). A plugin that
+        /// throws is logged and counted, and the others still have the row. Game thread only.
+        /// </summary>
+        public void UpdateStatusRow(string plugin, string entry, string value, long colour = 0xFFFFFFFF)
+        {
+            foreach (IPlugin shower in _plugins.ToList())
+            {
+                if (shower is not IStatusRows rows)
+                    continue;
+
+                try
+                {
+                    rows.UpdateStatusRow(plugin, entry, value, colour);
+                }
+                catch (Exception ex)
+                {
+                    Statistics.PluginExceptions++;
+                    _log.Error($"Plugin {shower.Name} threw taking the status row {plugin} - {entry}.", ex);
+                }
+            }
+        }
 
         private volatile bool _actionsAllowed = true;
 
@@ -209,9 +253,83 @@ namespace AC.Host
         /// The movement keys. Whatever runs the overlay sets its <see cref="GameInput.Publish"/>
         /// and <see cref="GameInput.Attached"/>; until then no key can be held.
         /// </summary>
-        public GameInput InputKeys => _input ??= new GameInput(_log, _settings) { Allowed = () => _actionsAllowed && CanAct };
+        public GameInput InputKeys => _input ??= new GameInput(_log, _settings)
+        {
+            Allowed = () => _actionsAllowed && CanAct,
+            ClientReports = () => _world.Character.ClientReports,
+            Window = () => GameWindow,
+        };
 
         IGameInput IHost.Input => InputKeys;
+
+        /// <summary>
+        /// What the game's window is doing, as the overlay last said. Whatever runs the overlay
+        /// passes on what it says through <see cref="NoteGameWindow"/>.
+        /// </summary>
+        public GameWindowState GameWindow { get; private set; } = GameWindowState.Unknown;
+
+        /// <summary>Raised on the game thread when <see cref="GameWindow"/> changes.</summary>
+        public event EventHandler<GameWindowState> GameWindowChanged;
+
+        /// <summary>
+        /// Takes in what the overlay says of the game's window - or <see cref="GameWindowState.Unknown"/>
+        /// when it goes - and says so in the log when it changes. Game thread only.
+        /// </summary>
+        public void NoteGameWindow(GameWindowState state)
+        {
+            state ??= GameWindowState.Unknown;
+            if (state.Equals(GameWindow))
+                return;
+
+            GameWindowState was = GameWindow;
+            GameWindow = state;
+
+            if (state.Known)
+            {
+                string line = "The game window is " + state.Describe() + ".";
+                if (state.Minimized)
+                    line += " Plugins go on acting over the network; walking needs the game to take keys while minimized"
+                        + (KeepPlayingMinimized ? "." : "; \"Keep playing while minimized\" parks it off-screen instead, where it does.");
+                else if (state.Parked)
+                    line += " The game goes on taking keys there; bring it back from the taskbar.";
+                _log.Info(line);
+            }
+            else if (was.Known)
+            {
+                _log.Info("The overlay no longer says what the game window is doing.");
+            }
+
+            GameWindowChanged?.Invoke(this, state);
+        }
+
+        private bool? _keepPlayingMinimized;
+
+        /// <summary>
+        /// The player's choice to keep playing while the game is minimized: minimizing the window
+        /// then sends it off-screen at about thirty frames a second instead, where the game goes on
+        /// taking the keys plugins hold - it comes back from the taskbar as a minimized window
+        /// would. Off unless "Overlay:KeepPlayingMinimized" says otherwise or the player turns it
+        /// on; the overlay reads it from each snapshot, so a change applies at once.
+        /// </summary>
+        public bool KeepPlayingMinimized
+        {
+            get => _keepPlayingMinimized ??= _settings.TryGetValue("Overlay:KeepPlayingMinimized", out string text)
+                && (text.Trim().Equals("on", StringComparison.OrdinalIgnoreCase) || (bool.TryParse(text.Trim(), out bool on) && on) || text.Trim() == "1");
+            set
+            {
+                if (KeepPlayingMinimized == value)
+                    return;
+
+                _keepPlayingMinimized = value;
+                _log.Info(value
+                    ? "Keep playing while minimized is ON: minimizing the game parks it off-screen at about 30 frames a second, where it goes on taking keys."
+                    : "Keep playing while minimized is off: minimizing the game minimizes it.");
+                KeepPlayingMinimizedChanged?.Invoke(this, value);
+            }
+        }
+
+        /// <summary>Raised when <see cref="KeepPlayingMinimized"/> changes, with the new value.</summary>
+        public event EventHandler<bool> KeepPlayingMinimizedChanged;
 
         public HostStatistics Statistics { get; } = new HostStatistics();
 
@@ -242,6 +360,7 @@ namespace AC.Host
         public event EventHandler<string> ServerConnected;
         public event EventHandler<uint> PlayerIdentified;
         public event EventHandler<string> LoggedOff;
+        public event EventHandler LoggingOff;
         public event EventHandler<WorldObject> ObjectCreated;
         public event EventHandler<WorldObject> ObjectUpdated;
         public event EventHandler<WorldObject> ObjectAppraised;
@@ -311,13 +430,21 @@ namespace AC.Host
 
         /// <summary>Puts a line in the game's chat window as given, in chat type <paramref name="chatType"/>.</summary>
         /// <remarks>
+        /// <para>
         /// A line longer than <see cref="LongestLineShown"/> goes as several, broken at the last
         /// space that keeps each short enough - or, with none, where it has to be: the relay slips
         /// a message into the server's stream only whole, in one fragment, and one that needs more
         /// would never arrive.
+        /// </para>
+        /// <para>
+        /// A link the old client drew - "&lt;Tell:IIDString:...&gt;text&lt;\Tell&gt;", around the
+        /// item lines Mag-Tools and Virindi Tank print - goes as its text alone, as the old client
+        /// showed it: AC:Unreal's chat has no links, and would show the markup (<see cref="ChatMarkup"/>).
+        /// </para>
         /// </remarks>
         public bool ShowInGame(string text, int chatType)
         {
+            text = ChatMarkup.Visible(text);
             if (string.IsNullOrEmpty(text) || !_transport.CanShowInGame)
                 return false;
 
@@ -1098,11 +1225,14 @@ namespace AC.Host
         private void OnMessageReceived(object sender, GameMessageEventArgs e)
         {
             // Here, on the relay's thread, so the player's own appraisal is known before its answer
-            // is judged - against a server on this machine that can be a millisecond later.
-            if (e.Direction == PacketDirection.Outbound)
+            // is judged - against a server on this machine that can be a millisecond later. The
+            // host's own, which the relay sees go on in the client's packets too, are not the
+            // player's: their answers stay the host's.
+            if (e.Direction == PacketDirection.Outbound && !e.FromHost)
                 _appraisals.Sent(e.Message.Opcode, e.Message.Payload.Span);
 
-            RunOnGameThread(() => ApplyMessage(e.Direction, e.Message));
+            bool fromHost = e.FromHost;
+            RunOnGameThread(() => ApplyMessage(e.Direction, e.Message, fromHost));
         }
 
         private readonly AppraisalRequests _appraisals = new AppraisalRequests();
@@ -1125,6 +1255,7 @@ namespace AC.Host
             {
                 _world.EndSession(SessionBoundary.Describe(end));
                 ForgetSessionInJournal();
+                Session?.OnSessionEnded(SessionBoundary.Describe(end));
             });
 
         private void OnTransportEnded(object sender, EventArgs e)
@@ -1133,7 +1264,12 @@ namespace AC.Host
             RunOnGameThread(() => _queue.CompleteAdding());
         }
 
-        private void ApplyMessage(PacketDirection direction, AcMessage message)
+        /// <param name="fromHost">
+        /// Whether a message going to the server is the host's own, sent as the client: what the
+        /// host asked about is not what the player selected (<see cref="MessageDecoder.Apply(AcMessage, PacketDirection, WorldState, bool)"/>),
+        /// and is not kept for the next host as the player's selection either.
+        /// </param>
+        private void ApplyMessage(PacketDirection direction, AcMessage message, bool fromHost = false)
         {
             if (direction == PacketDirection.Inbound)
                 Statistics.MessagesInbound++;
@@ -1145,7 +1281,7 @@ namespace AC.Host
             _applyingMessage = true;
             try
             {
-                outcome = MessageDecoder.Apply(message, direction, _world);
+                outcome = MessageDecoder.Apply(message, direction, _world, fromHost);
             }
             catch (Exception ex)
             {
@@ -1159,7 +1295,20 @@ namespace AC.Host
             }
 
             // Kept for the next host, whatever the decoder made of it: a newer one may make more.
-            Journal(direction, message, vendorBefore);
+            // Not the host's own questions about an object, which the next host would take for
+            // the player's selection; their answers are kept, as everything the server says is.
+            if (!(fromHost && MessageDecoder.IsSelectionQuestion(message)))
+                Journal(direction, message, vendorBefore);
+
+            // A logout or an entering of the world under way moves on with what either end says.
+            try
+            {
+                Session?.OnMessage(direction, message);
+            }
+            catch (Exception ex)
+            {
+                _log.Error($"Following the character list threw on opcode 0x{message.Opcode:X4}.", ex);
+            }
 
             // Every client action shares one opcode, so the opcode alone says nothing
             // about what was sent.
@@ -1251,6 +1400,15 @@ namespace AC.Host
             catch (Exception ex)
             {
                 _log.Error("The movement keys could not be kept up to date.", ex);
+            }
+
+            try
+            {
+                Session?.Tick();
+            }
+            catch (Exception ex)
+            {
+                _log.Error("A logout or an entering of the world could not be followed.", ex);
             }
 
             // What has been out of the character's sight long enough is let go of, as the client
@@ -1419,6 +1577,22 @@ namespace AC.Host
             public Task<bool> StackableMergeAsync(uint fromStackId, uint toStackId, int amount) => Decline("merge stacks");
 
             public Task<bool> SalvageAsync(uint toolId, IReadOnlyList<uint> itemIds) => Decline("salvage");
+
+            public Task<bool> GiveAsync(uint objectId, uint targetId, int amount) => Decline("give");
+
+            public Task<bool> LogOutAsync() => Decline("log out");
+
+            public Task<bool> EnterWorldAsync(uint characterId) => Decline("enter the world");
+
+            public Task<bool> FellowshipRecruitAsync(uint playerId) => Decline("recruit to the fellowship");
+
+            public Task<bool> FellowshipQuitAsync(bool disband) => Decline(disband ? "disband the fellowship" : "leave the fellowship");
+
+            public Task<bool> FellowshipDismissAsync(uint playerId) => Decline("dismiss a fellow");
+
+            public Task<bool> FellowshipAssignLeaderAsync(uint playerId) => Decline("hand on the fellowship's leadership");
+
+            public Task<bool> FellowshipSetOpenAsync(bool open) => Decline("open or close the fellowship");
 
             private Task<bool> Decline(string what)
             {

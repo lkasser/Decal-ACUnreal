@@ -80,7 +80,6 @@ namespace AC.Host.Handover
         /// <summary>The name of the file a host listening on <paramref name="listenPort"/> hands over in.</summary>
         public static string PathIn(string dataDirectory, int listenPort)
             => Path.Combine(dataDirectory, "handover-" + listenPort.ToString(CultureInfo.InvariantCulture) + ".bin");
-
         /// <summary>Whether this was written by a relay with the same ports, to the same server.</summary>
         public bool IsFor(ProxyOptions options)
         {
@@ -204,6 +203,12 @@ namespace AC.Host.Handover
             {
                 throw new InvalidDataException("A handover cut short.", ex);
             }
+            catch (Exception ex) when (ex is FormatException || ex is ArgumentException || ex is OverflowException)
+            {
+                // Bytes that are not what they claim - a string's length, an address, a port - say
+                // so in a way of their own; to whoever reads the file they all mean the same thing.
+                throw new InvalidDataException($"A handover that does not read as one ({ex.Message}).", ex);
+            }
         }
 
         /// <summary>Writes the snapshot whole, or not at all: to a file beside it first, then moved into place.</summary>
@@ -228,17 +233,28 @@ namespace AC.Host.Handover
         /// this server, less than <see cref="MaxAge"/> before <paramref name="now"/>. Otherwise null,
         /// with why in <paramref name="refusal"/>; both null when there was nothing there.
         /// </summary>
+        /// <remarks>
+        /// "Nothing there" is only ever the file not being found. The file is opened rather than
+        /// asked after first: asking whether a file exists answers no for a file that is there but
+        /// cannot be looked at, and a handover lost that way would look exactly like none written.
+        /// Opened sharing everything, so that whatever else has it open - a scanner, an editor -
+        /// does not stand in the way.
+        /// </remarks>
         public static HandoverSnapshot Take(string path, ProxyOptions options, DateTimeOffset now, out string refusal)
         {
             refusal = null;
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            if (string.IsNullOrEmpty(path))
                 return null;
 
             HandoverSnapshot snapshot;
             try
             {
-                using (FileStream file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (FileStream file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                     snapshot = Read(file);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException)
+            {
+                return null;
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidDataException)
             {

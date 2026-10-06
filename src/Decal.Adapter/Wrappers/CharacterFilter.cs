@@ -84,10 +84,28 @@ namespace Decal.Adapter.Wrappers
 
         public int Id => unchecked((int)Character.Id);
 
-        public string Name => Character.Name ?? string.Empty;
+        /// <summary>
+        /// The character's name, as its description or its object gave it; or, where neither has
+        /// yet, the character list's for it - so that a Login handler reading it finds it there, as
+        /// one did under Decal, whose Login came with the description.
+        /// </summary>
+        public string Name
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(Character.Name))
+                    return Character.Name;
+
+                uint id = Character.Id;
+                return id == 0 ? string.Empty : World.AccountCharacters.FirstOrDefault(c => c.Id == id)?.Name ?? string.Empty;
+            }
+        }
 
         /// <summary>The account's name, as the server's character list gave it.</summary>
         public string AccountName => World.AccountName ?? string.Empty;
+
+        /// <summary>How many characters the account may have, as the server's character list gave it; 0 before it has come.</summary>
+        public int CharacterSlots => World.CharacterSlots;
 
         public string Server => World.ServerName ?? string.Empty;
 
@@ -319,6 +337,19 @@ namespace Decal.Adapter.Wrappers
         internal void OnLogin(int id) => _runtime.Raise(Login, this, new LoginEventArgs(id), nameof(Login));
 
         internal void OnLoginComplete() => _runtime.Raise(LoginComplete, this, nameof(LoginComplete));
+
+        /// <summary>
+        /// Login, and LoginComplete when <paramref name="complete"/>, for the handlers
+        /// <paramref name="theirs"/> picks out alone: a plugin started with the character already
+        /// in the world (<see cref="DecalRuntime.CatchUp"/>). LoginComplete's handlers are read
+        /// after Login's have run, since a plugin may subscribe to one from the other.
+        /// </summary>
+        internal void CatchUpLogin(Func<System.Reflection.Assembly, bool> theirs, int id, bool complete)
+        {
+            _runtime.Raise(DecalRuntime.Only(Login, theirs), this, new LoginEventArgs(id), nameof(Login));
+            if (complete)
+                _runtime.Raise(DecalRuntime.Only(LoginComplete, theirs), this, nameof(LoginComplete));
+        }
 
         internal void OnLogoff(LogoffEventType type) => _runtime.Raise(Logoff, this, new LogoffEventArgs(type), nameof(Logoff));
 

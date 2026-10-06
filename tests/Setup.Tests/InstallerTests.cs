@@ -154,6 +154,43 @@ namespace Setup.Tests
             Assert.DoesNotContain("Old.dll", InstallManifest.Load(temp["Decal Agent"], SetupProduct.DecalAgent).Files);
         }
 
+        /// <summary>
+        /// tools\update-agent.ps1 runs both setups between the Agent that stops and the one that
+        /// starts. What the first left in the data folder for the second - the session it handed
+        /// over, the copies its plugins ran from - is not the setups' business: every byte and every
+        /// time on it is as it was.
+        /// </summary>
+        [Fact]
+        public void AnUpdateLeavesWhatTheStoppedAgentLeftInTheDataFolderAlone()
+        {
+            using TempFolder temp = new TempFolder();
+            using (Payload agent = Payloads.Agent("1"))
+                Installer.Install(AgentRequest(temp, agent));
+            using (Payload plugin = Payloads.VirindiTank("1"))
+                Installer.Install(PluginRequest(temp, plugin));
+
+            Directory.CreateDirectory(temp[@"ACHost\running\31256\VirindiTank.Plugin-b80736d26f2b"]);
+            File.WriteAllText(temp[@"ACHost\running\31256\VirindiTank.Plugin-b80736d26f2b\VirindiTank.Plugin.dll"], "a copy");
+            File.WriteAllBytes(temp[@"ACHost\handover-9100.bin"], new byte[] { 0x41, 0x43, 0x48, 0x41, 0x4E, 0x44, 0x4F, 0x56, 1, 0, 0, 0 });
+            DateTime written = new DateTime(2026, 10, 5, 13, 46, 47, DateTimeKind.Utc);
+            File.SetLastWriteTimeUtc(temp[@"ACHost\handover-9100.bin"], written);
+            Directory.SetLastWriteTimeUtc(temp[@"ACHost\running"], written);
+            Directory.SetLastWriteTimeUtc(temp["ACHost"], written);
+
+            using (Payload agent = Payloads.Agent("2"))
+                Installer.Install(AgentRequest(temp, agent));
+            using (Payload plugin = Payloads.VirindiTank("2"))
+                Installer.Install(PluginRequest(temp, plugin));
+
+            Assert.Equal("agent 2", File.ReadAllText(temp[@"Decal Agent\DecalAgent.exe"]));
+            Assert.Equal(new byte[] { 0x41, 0x43, 0x48, 0x41, 0x4E, 0x44, 0x4F, 0x56, 1, 0, 0, 0 }, File.ReadAllBytes(temp[@"ACHost\handover-9100.bin"]));
+            Assert.Equal(written, File.GetLastWriteTimeUtc(temp[@"ACHost\handover-9100.bin"]));
+            Assert.Equal(written, Directory.GetLastWriteTimeUtc(temp[@"ACHost\running"]));
+            Assert.Equal(written, Directory.GetLastWriteTimeUtc(temp["ACHost"]));
+            Assert.Equal("a copy", File.ReadAllText(temp[@"ACHost\running\31256\VirindiTank.Plugin-b80736d26f2b\VirindiTank.Plugin.dll"]));
+            Assert.Equal(new[] { "handover-9100.bin", "running" }, Directory.GetFileSystemEntries(temp["ACHost"]).Select(Path.GetFileName).OrderBy(n => n, StringComparer.Ordinal));
+        }
+
         [Fact]
         public void AFileInUseStopsTheInstallSayingSoAndTheListStillCoversEverything()
         {

@@ -9,7 +9,8 @@
 
       Decal Agent    The Agent published self-contained for win-x64 - the .NET runtime and
                      Windows Forms beside DecalAgent.exe - with plugins\Decal.Compat (its native
-                     sqlite3.dll and Mono.Cecil included), acinject.exe, ACUnrealOverlay.dll from
+                     sqlite3.dll and Mono.Cecil's assemblies included, every assembly its
+                     deps.json names checked for), acinject.exe, ACUnrealOverlay.dll from
                      native\build.ps1, and Uninstall.exe, which runs on the same runtime.
 
     Plugins have setups of their own: the Virindi Tank repository builds VirindiTankSetup.exe,
@@ -140,8 +141,34 @@ try {
         "plugins\Decal.Compat\Decal.Adapter.dll",
         "plugins\Decal.Compat\VirindiViewService.dll",
         "plugins\Decal.Compat\Mono.Cecil.dll",
+        "plugins\Decal.Compat\Mono.Cecil.Rocks.dll",
         "plugins\Decal.Compat\native\sqlite3.dll"
     )
+
+    # And every assembly Decal.Compat runs on, as its deps.json lists them: beside it, or - for the
+    # host's own AC.* assemblies, which a plugin is always given the host's copy of - beside
+    # DecalAgent.exe. One left out fails only when first used, as Mono.Cecil.Rocks once did.
+    $compat = Join-Path $agent "plugins\Decal.Compat"
+    $deps = Get-Content -Raw -Path (Join-Path $compat "Decal.Compat.deps.json") | ConvertFrom-Json
+    foreach ($target in $deps.targets.PSObject.Properties) {
+        foreach ($library in $target.Value.PSObject.Properties) {
+            if (-not $library.Value.runtime) {
+                continue
+            }
+
+            foreach ($asset in $library.Value.runtime.PSObject.Properties.Name) {
+                $file = Split-Path -Leaf $asset
+                $beside = Join-Path "plugins\Decal.Compat" $file
+                if ($file -like "AC.*") {
+                    $beside = $file
+                }
+
+                if ($required -notcontains $beside) {
+                    $required += $beside
+                }
+            }
+        }
+    }
 
     $missing = @($required | Where-Object { -not (Test-Path (Join-Path $agent $_)) })
     if ($missing.Count -gt 0) {

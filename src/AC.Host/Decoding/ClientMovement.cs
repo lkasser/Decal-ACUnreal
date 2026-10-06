@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using AC.Host.World;
 using AC.Protocol;
 
@@ -23,6 +24,37 @@ namespace AC.Host.Decoding
         public const uint TurnCommand = 0x0100;
         public const uint TurnHoldKey = 0x0200;
         public const uint TurnSpeed = 0x0400;
+
+        /// <summary>The bits that name fields; the word's bits above them count the actions that follow.</summary>
+        public const uint Fields = 0x07FF;
+
+        /// <summary>Where the count of actions starts in the flags word.</summary>
+        public const int ActionCountShift = 11;
+    }
+
+    /// <summary>
+    /// One of the one-off motions a MoveToState carries after its fields - a chat emote's wave -
+    /// as the client packs it: the low half of the motion command, a stamp whose top bit says
+    /// the client asked for it, and a speed.
+    /// </summary>
+    public readonly struct ClientMotionAction
+    {
+        public ClientMotionAction(ushort command, ushort stamp, float speed)
+        {
+            Command = command;
+            Stamp = stamp;
+            Speed = speed;
+        }
+
+        /// <summary>The motion command's low sixteen bits: 0x0087 for Wave, 0x13000087.</summary>
+        public ushort Command { get; }
+
+        /// <summary>The client's count of actions in the low fifteen bits, and 0x8000 for one it began itself.</summary>
+        public ushort Stamp { get; }
+
+        public float Speed { get; }
+
+        public override string ToString() => $"0x{Command:X4}@{Speed:F2}";
     }
 
     /// <summary>Motion commands seen from the client, for reading a state back.</summary>
@@ -47,6 +79,7 @@ namespace AC.Host.Decoding
     /// </remarks>
     public sealed class ClientMotionState
     {
+        /// <summary>Which fields are present: <see cref="MotionFlags"/>, without the count of <see cref="Actions"/>.</summary>
         public uint Flags { get; set; }
 
         public uint CurrentHoldKey { get; set; }
@@ -70,6 +103,12 @@ namespace AC.Host.Decoding
         public uint TurnHoldKey { get; set; }
 
         public float TurnSpeed { get; set; }
+
+        /// <summary>
+        /// The one-off motions that follow the fields - a wave, a cheer - counted in the flags
+        /// word's bits above <see cref="MotionFlags.Fields"/>. Empty for a state that only moves.
+        /// </summary>
+        public IList<ClientMotionAction> Actions { get; set; } = new List<ClientMotionAction>();
 
         /// <summary>True if the character is moving along the ground under its own power.</summary>
         public bool IsMoving => ForwardCommand != 0 || SidestepCommand != 0 || TurnCommand != 0;
@@ -127,8 +166,9 @@ namespace AC.Host.Decoding
         {
             state = null;
 
-            if (!reader.TryReadUInt32(out uint flags)) return false;
+            if (!reader.TryReadUInt32(out uint packed)) return false;
 
+            uint flags = packed & MotionFlags.Fields;
             ClientMotionState result = new ClientMotionState { Flags = flags };
 
             if ((flags & MotionFlags.CurrentHoldKey) != 0)
@@ -195,6 +235,19 @@ namespace AC.Host.Decoding
             {
                 if (!reader.TryReadSingle(out float v)) return false;
                 result.TurnSpeed = v;
+            }
+
+            // The one-off motions - a chat emote's wave - eight bytes each, before the position.
+            uint actions = packed >> MotionFlags.ActionCountShift;
+            if (actions > (uint)(reader.Remaining / 8))
+                return false;
+
+            for (uint i = 0; i < actions; i++)
+            {
+                if (!reader.TryReadUInt16(out ushort command)) return false;
+                if (!reader.TryReadUInt16(out ushort stamp)) return false;
+                if (!reader.TryReadSingle(out float speed)) return false;
+                result.Actions.Add(new ClientMotionAction(command, stamp, speed));
             }
 
             state = result;

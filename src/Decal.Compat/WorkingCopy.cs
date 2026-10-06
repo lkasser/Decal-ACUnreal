@@ -20,8 +20,10 @@ namespace Decal.Compat
     /// </para>
     /// <para>
     /// Each time it is loaded its code - DLLs and programs - is brought up to date from the install,
-    /// with the x86-only mark cleared as it is for every Decal plugin and its reads of
-    /// HKEY_LOCAL_MACHINE pointed at the 32-bit registry (<see cref="RegistryRewrite"/>); its other
+    /// with the x86-only mark cleared as it is for every Decal plugin, its reads of
+    /// HKEY_LOCAL_MACHINE pointed at the 32-bit registry (<see cref="RegistryRewrite"/>), its
+    /// 32-bit address arithmetic widened (<see cref="PointerRewrite"/>), and its calls of the
+    /// player's folders, the XML serializer and Decal.dll pointed at this host's (<see cref="CallRewrite"/>); its other
     /// files are copied only the first time, so what it has written here since is kept. Archives, and any file over
     /// <see cref="LargestFile"/>, are left behind: an install folder can be a downloads folder, and
     /// a plugin does not read its own installer.
@@ -36,9 +38,17 @@ namespace Decal.Compat
 
         /// <summary>
         /// Goes up when what is done to a DLL on its way here changes, so copies made the old way
-        /// are made again.
+        /// are made again. 4: CallRewrite. 5: copies stamped by an install that lacked
+        /// Mono.Cecil.Rocks, and so were never widened, are made again.
         /// </summary>
-        private const int Treatment = 2;
+        private const int Treatment = 5;
+
+        /// <summary>
+        /// In what is said of a DLL that could not be treated because one of the host's own
+        /// assemblies is missing - an incomplete install, not the plugin's doing. The caller logs
+        /// such a line as a warning, and the copy is made again at the next start.
+        /// </summary>
+        internal const string HostAssemblyMissing = "is not installed beside Decal.Compat";
 
         /// <summary>Beside each DLL copied: what it was copied from, and how it was treated.</summary>
         internal const string StampSuffix = ".source";
@@ -153,8 +163,10 @@ namespace Decal.Compat
 
         /// <summary>
         /// Copies a DLL or program when the install's differs - by size or time - from the one it
-        /// was made from, clearing an IL-only assembly's x86-only mark and pointing its registry
-        /// reads at the 32-bit registry on the way, and stamps the copy with what it was made from.
+        /// was made from, clearing an IL-only assembly's x86-only mark, pointing its registry
+        /// reads at the 32-bit registry, widening its address arithmetic and pointing its other
+        /// calls this host answers otherwise at the stand-ins on the way, and stamps the copy
+        /// with what it was made from.
         /// </summary>
         private static void CopyCode(FileInfo file, string copy, List<string> problems)
         {
@@ -166,17 +178,90 @@ namespace Decal.Compat
                 return;
 
             byte[] image = File.ReadAllBytes(file.FullName);
+            bool untreated = false;
             if (file.Extension.Equals(".dll", StringComparison.OrdinalIgnoreCase))
             {
                 DecalPluginLoadContext.TryClearRequires32Bit(image);
-                image = RegistryRewrite.Rewrite(image, out _, out string problem);
-                if (problem != null)
+                foreach (string problem in Treat(ref image))
+                {
                     problems.Add($"{file.Name}: {problem}.");
+                    untreated |= problem.Contains(HostAssemblyMissing, StringComparison.Ordinal);
+                }
             }
 
             File.WriteAllBytes(copy, image);
             File.SetLastWriteTimeUtc(copy, file.LastWriteTimeUtc);
-            File.WriteAllText(stamp, source);
+
+            // Unstamped, a copy the host could not treat is made again at the next start, once
+            // what it lacked is installed; stamped, it would have stayed as it was for good.
+            if (untreated)
+                File.Delete(stamp);
+            else
+                File.WriteAllText(stamp, source);
+        }
+
+        /// <summary>
+        /// The rewrites, in turn; what went wrong with each, if anything. <paramref name="image"/>
+        /// is the same array when none of them changed anything. Also for a plugin from Decal
+        /// Compat's own folder, which has no working copy (<see cref="DecalPluginLoadContext"/>).
+        /// </summary>
+        internal static List<string> Treat(ref byte[] image)
+        {
+            List<string> problems = new List<string>();
+            try
+            {
+                image = RegistryRewrite.Rewrite(image, out _, out string problem);
+                if (problem != null)
+                    problems.Add(problem);
+
+                image = PointerRewrite.Rewrite(image, out _, out problem);
+                if (problem != null)
+                    problems.Add(problem);
+
+                image = CallRewrite.Rewrite(image, out _, out problem);
+                if (problem != null)
+                    problems.Add(problem);
+            }
+            catch (Exception ex) when (MissingHostAssembly(ex) != null)
+            {
+                // Mono.Cecil itself missing fails the call before either rewrite can catch it.
+                problems.Add("it could not be treated for this host: " + MissingHostAssembly(ex));
+            }
+
+            return problems;
+        }
+
+        /// <summary>
+        /// When an exception says one of the host's own assemblies could not be loaded - the
+        /// runtime's FileNotFoundException or FileLoadException naming an assembly, as Mono.Cecil.Rocks
+        /// was on an install that lacked it - which one, where it should be, and what to do, ready
+        /// to follow "could not be ...: "; null for anything else.
+        /// </summary>
+        internal static string MissingHostAssembly(Exception ex)
+        {
+            string name = ex switch
+            {
+                FileNotFoundException missing => missing.FileName,
+                FileLoadException unloadable => unloadable.FileName,
+                _ => null,
+            };
+
+            if (string.IsNullOrEmpty(name))
+                return null;
+
+            string described;
+            try
+            {
+                System.Reflection.AssemblyName assembly = new System.Reflection.AssemblyName(name);
+                described = assembly.Version != null ? $"{assembly.Name}.dll ({assembly.Version})" : assembly.Name + ".dll";
+            }
+            catch (Exception parse) when (parse is ArgumentException || parse is FileLoadException)
+            {
+                described = Path.GetFileName(name);
+            }
+
+            string folder = Path.GetDirectoryName(typeof(WorkingCopy).Assembly.Location);
+            return $"the Decal Agent's own {described} {HostAssemblyMissing} in {folder}. Reinstall the Decal Agent; the copy is made again at its next start";
         }
     }
 }

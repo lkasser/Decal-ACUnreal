@@ -55,7 +55,11 @@ public interface IHost
                                        // walk, turn, stop, cast, stance, query health,
                                        // attack, shoot, cancel an attack, wield
     IGameInput Input { get; }          // the game's movement keys, held down through
-                                       // the overlay - how a plugin actually walks
+                                       // the overlay - how a plugin actually walks;
+                                       // Input.Unheeded: held 3 s, no word from the client
+    GameWindowState GameWindow { get; }
+                                       // minimized, drawing, parked off-screen in place
+                                       // of minimized - as the overlay says
     IPluginLog Log { get; }
     ChatCommandOutcome RunChatCommand(string text, IPlugin from);
                                        // a line as though typed: other plugins'
@@ -239,8 +243,8 @@ motion decoder survived a full set of passing tests that way.
   it yet, so whether AC:Unreal keeps the `/` or turns it into `@` is unseen; both are
   caught. A withheld line is not in the capture file either.
 - **Buffed skill values.** Enchantments are decoded and tracked, but not yet
-  *applied*: a buffed skill still reads as its base value, and
-  `ActiveSpellCount` is 0. Applying them needs the stat-modifier key numbering,
+  *applied*: a buffed skill still reads as its base value. (An item's `ActiveSpellCount` is the
+  spells its appraisal lists as on it now.) Applying them needs the stat-modifier key numbering,
   and only three keys have been observed - not enough to map.
 - **Attacks the character makes, as seen on the wire.** The recorded sessions are of
   a character that fights with spells, so none has a melee or missile attack, a wield,
@@ -485,8 +489,15 @@ why in full. "Find New" also reads Decal's registry again.
 DecalCompat (`src/Decal.Compat`) finds Decal plugins where Decal did: every entry under
 `HKLM\SOFTWARE\Decal\Plugins` (the 32-bit view, WOW6432Node, since Decal is 32-bit), with its
 Enabled tick, Path, Assembly and Object. It also still runs any plugin put in its own folder
-(`plugins\DecalCompat\Decal Plugins` in the data folder). `DecalCompat:Registry=false` leaves
-the registry alone; `DecalCompat:Skip` names plugins to leave out.
+(`plugins\DecalCompat\Decal Plugins` in the data folder, or `DecalCompat:Folder`), with no registry
+entry: each DLL there - `<name>\<name>.dll`, every DLL of a folder not laid out so, or one lying in
+the folder itself - is read as metadata, and one with a class derived from Decal's PluginBase or
+FilterBase is a Decal plugin (`DecalPluginCatalog.FindInFolder`). Such a plugin runs where it is,
+but its DLLs are treated as a registered plugin's working copy has them (below) - its calls of the
+player's folders, the XML serializer, Decal.dll and the registry pointed at this host's - and one
+whose calls that changes runs from a treated copy (`DecalPluginLoadContext`). Mag-Filter is installed
+there (below). `DecalCompat:Registry=false` leaves the registry alone; `DecalCompat:Skip` names
+plugins to leave out.
 
 Every registered entry is listed; which are loaded, and why not:
 
@@ -505,17 +516,24 @@ Decal's registry is only ever read.
 **The install is only read, by the host and by the plugin.** A registered plugin runs from a
 working copy of its install folder (`plugins\DecalCompat\Registered\<folder>-<hash>`,
 `WorkingCopy.cs`), and is told that is its folder: its DLLs are brought up to date from the
-install each time it loads, with the x86-only mark cleared, and its other files are copied the
+install each time it loads, with the x86-only mark cleared and 32-bit address arithmetic widened
+(`PointerRewrite.cs`: the System.Data.SQLite 1.0.61 Virindi's tools ship read every blob through
+`IntPtr.ToInt32`, which overflows in this 64-bit process), and its other files are copied the
 first time only, so what it writes - settings, rules, error logs - stays in the copy. Archives,
 files over 32 MB and large subfolders are left behind (Mag-Tools is registered in a downloads
-folder beside the client's installers). A plugin that reads its folder out of the registry
-itself, or writes to Documents, is not redirected.
+folder beside the client's installers). Its calls this 64-bit .NET host answers otherwise than
+Decal did go to stand-ins in `Decal.Adapter.Hosting` (`CallRewrite.cs`): `Environment.GetFolderPath`
+to `PluginFolders` - the player's own Documents, as under Decal, unless `DecalCompat:UserFolders`
+names a folder to stand in for them, as the tests do; `new XmlSerializer(type)` to `PluginXml`,
+which can serialize a `List<>` of the plugin's own type (.NET's own writes that code where nothing
+may name a type that can be unloaded); and a P/Invoke of Decal.dll's `DispatchOnChatCommand` to
+`DecalNative`.
 
 **Why a plugin is unwell** is gathered as it happens and shown as its status and reason
 (`DecalFailure.cs`):
 
 - a failure to load or start is read as what it needed - an assembly (`Decal.Interop.*`,
-  Managed DirectX beyond its maths, the real `uTank2`), a type or member the stand-ins lack, a
+  Managed DirectX beyond its maths, `VTClassic`), a type or member the stand-ins lack, a
   32-bit native DLL,
   a registry read through the 64-bit view (now rare: a registered plugin's working copy has its
   HKLM reads pointed at the 32-bit view, `RegistryRewrite`);
@@ -527,6 +545,151 @@ itself, or writes to Documents, is not redirected.
   exceptions that way) is read, logged, moved off screen and answered with its least harmful
   button at once (`PluginDialogs.cs`), instead of stopping the game thread until someone finds it
   behind the game. `DecalCompat:ShowMessageBoxes=true` lets them show.
+
+**A plugin switched on while the host runs** - ticked in Decal's window mid-session, the way
+a player turns one on here - is told what the others were told as they started
+(`DecalRuntime.CatchUp`): FilterInitComplete, ServiceInitComplete and PluginInitComplete, then,
+with the character in the world, its Login and LoginComplete, to its own handlers alone. Decal
+loaded plugins as the client started, so every plugin heard these, and one that misses them waits
+for ever: Mag-Tools makes its window on PluginInitComplete and starts its timers, hotkeys and
+status rows on LoginComplete.
+
+**Stand-ins for Virindi's other assemblies.** Besides Decal.Adapter, VVS, FileService,
+Decal.Interop.Core and Managed DirectX's maths, a Decal plugin that names one of these is given:
+
+- `VirindiHotkeySystem` (`src/VirindiHotkeySystem`): a hotkey a plugin adds is one of the host's,
+  listed in the hotkey windows as "vhs/<owner>/<name>" with the key it was made with, and a press
+  raises its `Fired2` (Decal Compat is an `IOverlayHotkeys`). A stopped plugin's go with it.
+- `VirindiHUDs` (`src/VirindiHUDs`): `StatusModel.UpdateEntry` puts a row on the Status HUD Virindi
+  Tank shows, through `IHost.UpdateStatusRow` and `IStatusRows`. Loaded only for a plugin that names
+  it, since Virindi Reporter and Sense feed it whenever they find it, and Virindi Tank shows
+  Reporter's rows itself.
+- `uTank2` (`src/uTank2`): Virindi Tank's API for other plugins, answering as Virindi Tank did with
+  no loot profile loaded - no item needs an ID, no rule keeps anything, its world tracker has
+  nothing - with the loot types forwarded to the host's own (`UTank2.Abstractions`). Loaded only
+  when asked for, since Integrator2 and Item Tool look for it among the loaded assemblies.
+
+**Decal's window.** `Decal.Hwnd` is a message-only window of the host's own (`ClientWindow`), not
+the client's, which is another process's and not a plugin's to move, take the frame off or close.
+Keys a plugin posts to it - WM_KEYDOWN and WM_KEYUP - are pressed in the game by their virtual-key
+codes through the overlay (`IGameInput.HoldKey`), in order, each as it arrives, while plugins may
+act; changes posted together go 50 ms apart (`ClientWindow.Apart`) so the game sees each, on the
+host's timer between ticks. "/mt jumpw 100" holds space about 150 ms, where one change a tick held
+it 300. Mouse clicks, at places on the old client's panels, and a request to close it are dropped
+and said once. Two things are read for what they meant instead:
+
+- **A line typed into the chat** - Enter, keys that type (letters, digits, space, the punctuation
+  keys, Shift), and Enter, its closing Enter waited for up to 20 ticks - is run as the chat box ran
+  a line (`HooksWrapper.InvokeChatParser`): offered to the Decal plugins, then the host's plugins'
+  commands, the game's commands and speech. Its keys are never pressed, so it works with the game
+  minimized. Enter alone, and keys with no Enter after them in time, are still keys.
+- **The old client's character select, clicked**, with the session at the character list: a click
+  in its list of characters (x 42 to 202, y 209 to 532, as the retail client had it) chooses the
+  character on that row - the list's height shared among the account's slots
+  (`IWorldView.CharacterSlots`, Decal's `CharacterFilter.CharacterSlots`), the characters counted by
+  name as the old client and Mag-Filter count them - and a click on its Enter (239,289, 211 by 211)
+  enters the world as the one chosen through the host, `IGameActions.EnterWorldAsync`, which `achost
+  ctl login` uses. With no row clicked, the one chosen is the character the client last asked to
+  enter as, else the last in the world, as the retail select had it. Enter clicked again within 50
+  ticks asks nothing more: a plugin retrying a login clicks it five times a second. No password is
+  involved: the account is already at its character list.
+
+Lines plugins put in the chat go as a message from the server. A link the old client drew -
+`<Tell:IIDString:id:name>text<\Tell>`, round Mag-Tools' and Virindi Tank's item lines - goes as its
+text alone (`ChatMarkup`): AC:Unreal's chat has no links, so it cannot be clicked.
+
+#### Mag-Tools
+
+Mag-Tools (2.1.6, `MagTools.dll` in the Mag-Tools install folder) is registered with Decal and off in its list;
+ticked on in Decal's window here it starts, shows its window, binds its hotkeys (One Touch Heal,
+Maximize and Minimize Chat), puts its fourteen Status HUD rows up and says "Plugin now online".
+Its settings, logs and inventory file stay where Decal's copy of it kept them, in
+`Documents\Decal Plugins\Mag-Tools`. "/mt" is a known command word, so a line the player types for
+it is kept from the server. Its status reads "running, with errors" for one reason, which it says
+in chat at login: its inventory packer could not load `VTClassic` (below).
+
+Before, it failed four ways: switched on mid-session it never heard PluginInitComplete or its
+login, so it made no window and started nothing; its login handler needed the real Virindi Hotkey
+System; its HUD the real Virindi HUDs; and its inventory logger's `XmlSerializer` of
+`List<MyWorldObject>` threw at every login. Its looter - on by default for chests and corpses -
+asked the real Virindi Tank about every open container, ten times a second, into its error log and
+the chat, for as long as the host ran.
+
+The player's metas send it 588 commands (the Virindi Tank repository's `MetaCorpusTests`). Each, tested end to end against the
+real DLL in `MagToolsTests` where it can be:
+
+| Command | Uses | Here |
+|---|---|---|
+| `use`, `usep`, `usel`, `useip` | 156, 90, 36, 24 | Works: the item by name in the packs or nearby (`closestnpc`, `closestportal` too), used; "X on Y" uses X on Y, the plugin's selection standing for the use |
+| `face` | 89 | Works: the game's turn keys, through the overlay, to within 5 degrees (`Facing`) - Decal turned the client itself, to the degree |
+| `fellow` | 54 | `recruit`, `disband`, `quit` work: ACE's fellowship actions. `create` (3) does not: it is a script of the old client's keys and mouse clicks on its fellowship panel |
+| `send` | 39 | The keys - `enter`, `f4`, `f12`, `msg` letters - are pressed in the game, in order; what each does is AC:Unreal's. `enter`, `msg` and `enter` sent together are a line typed into the chat, and run as one (Decal's window, above) |
+| `combatstate` | 22 | Works |
+| `give`, `givep` | 19, 10 | Works: the whole stack |
+| `jump`, `jumpw`, `sjump`, `sjumpw` | 1, 13, 1, 10 | Works: space held for the time, let go with W (and shift) down, through the overlay |
+| `click` | 5 | Does not: mouse clicks at the old client's dialog, which the overlay cannot make |
+| `castp` | 4 | Works: the spell by part of its name from FileService, cast at nothing if it takes no target, else at the character |
+| `logout` | 4 | Works |
+| `loot`, `lootp` | 4, 2 | Works: in the chest or corpse last opened (`Hooks.OpenedContainer`) |
+| `autopack` | 3 | Not here: the packer - and its Pack Inventory hotkey - needs `VTClassic` from Virindi Tank's folder, which the host keeps inside its own Virindi Tank; Mag-Tools says so once at login, and the line goes on to the server, which knows no "mt". The player has no AutoPack profile, so it did nothing under Decal either |
+| `drop` | 1 | Works |
+| `selectp` | 1 | The client's selection cannot be set; the plugin's choice stands for what it uses next |
+
+Its "Show Item Info On Ident" (Misc options, on by default) prints a line for each item the player
+selects and has appraised: Decal raised `ItemSelected` for the client's own selection, and
+`IdentReceived` for every appraisal, so it printed only what was appraised within 10 s of the player
+selecting it. The host's own appraisals - Virindi Tank's mana upkeep of the worn gear - go on in the
+client's packets, and the relay marks them as the host's (`ClientStreamRewriter.IsOurs`): they are
+never the player's selection, and their answers are kept from the client. Before, every one of them
+printed, and threw for armour, whose appraisal lists the spells on it with the top bit set, which
+Decal gave as `ActiveSpell` and not as `Spell`.
+
+The turns, keys and jumps need the overlay attached and "Let plugins act" on; without them they
+are dropped and said once. What cannot work, and why: anything that moves, resizes or reframes the
+client's window (Mag-Tools' window options), mouse clicks into it, and the client's own panels
+(Hooks.UIElementRegion, Maximize/Minimize Chat) - all the old client's memory and windows; Virindi
+Tank's loot rules for its looter, item info and packer, which this host's Virindi Tank does not
+offer to Decal plugins (its looter still empties the character's own corpse, which asks no rule);
+and its vendor and trade commands, whose hooks the host does not have.
+
+#### Mag-Filter
+
+Mag-Filter is Mag-nus's Decal network filter from Mag-Plugins: commands that choose the character to
+enter the world as next, or by default, and that queue lines to type once a character has entered.
+It is not installed on this machine; the player's metas send it fourteen lines. So it is built from
+its own sources, unchanged, against these stand-ins (`third_party\Mag-Filter`: the sources are
+fetched at a pinned commit, not kept here), and installed as a Decal plugin in Decal Compat's own
+folder, with no registry entry and nothing written to the registry:
+
+```powershell
+tools\install-plugin.ps1 -Plugin MagFilter   # fetch if need be, build, and install into
+                                             # %LOCALAPPDATA%\ACHost\plugins\DecalCompat\Decal Plugins\MagFilter
+                                             # -Data for another data folder, -Notify to tell a running host
+```
+
+Its licence is Mag-Plugins' own, the **GNU LGPL 2.1**, not MIT; `license.md` is installed beside it
+as `LICENSE.md`, with `third_party\Mag-Filter\README.md`, which names the commit. **It handles no
+password**: at that commit it stores, reads and sends none - its logins only choose a character at
+the character list the account is already at - and its build stops on any source that mentions a
+password or credentials, so none can come in unread.
+
+It starts as the filter it is ("Mag-Filter", running, from the folder), "/mf" is a known command
+word, and it keeps its settings (`Mag-Filter.xml`) and error log in `Documents\Decal Plugins\Mag-Filter`,
+as under Decal - its call of the player's Documents treated as a registered plugin's is. What it does
+here, tested end to end against the built DLL in `MagFilterTests`:
+
+| Command | Metas | Here |
+|---|---|---|
+| `lncbi set <n>`, `lnc set <name>` | 10 (`lncbi set 1` to `10`, StipendsIB.met) | Works. When the server next lists the account's characters - after a logout, as the meta's `/mt logout` asks - Mag-Filter clicks that character's row and Enter on the old client's character select a second later, and the host enters the world as it through `IGameActions.EnterWorldAsync`, `ctl login`'s path, which waits for its own logout to be done first. Counted from 0 by name, as Mag-Filter and the old client count them. Entering needs the overlay attached and the game not minimized (parked is fine) |
+| `lmq add <line>`, `lcmq add`, `alcmq add`, `olcmq add`, and their `clear` | 4 (`lmq clear`, `lmq add /vt start`, `/vt meta load StipendsIB`, `/vt opt set enablemeta true`) | Works. Once the client has entered (its LoginComplete), Mag-Filter types each line - Enter, the line, Enter - and each is run as the chat box runs a line, reaching Virindi Tank's commands, minimized or not. As Mag-Filter types them: letters lower case, digits as spaces - "/vt meta load stipendsib", whose file is found all the same |
+| `alcmq wait set`, `olcwait set`, `clear` | - | Works: the wait before the after-login lines |
+| `dlc set`, `dlcbi set <n>`, `sdlcbi set <n>`, and their `clear` | - | Works: kept in its settings, by server and account; the character is entered through the host when the client first connects (the server's 0xF7EA), after two clicks that skipped the old client's movies, which are said and dropped |
+| `cssmfps <n>` | - | Taken and kept, but there is no character-select frame to slow: it would only slow the host's own tick at the character list. Leave it 0 |
+
+Also: when the server says a character is still in the world (CharacterError 13), Mag-Filter clicks
+OK and Enter five times a second until the client asks to enter - the host enters as the character
+the client had named, once, not again for 50 ticks. Its Esc at the login screen (FastQuit) has no
+window messages to hear, and its OK and Yes clicks on the old client's dialogs are dropped and said.
 
 What the player's registered plugins do here, as measured on this machine, is in
 the Virindi Tank repository's `docs/virindi-parity-code.md` section 5.
@@ -552,9 +715,134 @@ achost ctl find Auroch         # objects by name: where each is, who holds it
 achost ctl chat 20             # the game's last chat lines, as the host read them
 achost ctl say /vt help        # a line typed as the player types one
 achost ctl hotkey VirindiTank Toggle_MiniRemote  # a plugin's hotkey, as if pressed
+achost ctl window              # the game window as the overlay says it - minimized,
+                               # drawing, parked - and any keys held that it ignores
+achost ctl window keep on      # minimizing the game parks it off-screen instead, where
+                               # it goes on taking keys; Decal's Options page has it too
+achost ctl characters          # the account's characters, numbered as login takes them
+achost ctl logout              # log out to the character list, and say how it went
+achost ctl login "Testchar I"  # enter the world as one: by name, 0x id or number;
+                               # a last word keys or messages chooses the way
 achost ctl exit                # exit as the tray icon's Exit does: settings saved,
                                # the session handed over to the next host
 ```
+
+### Going to the character list and back: `ctl logout`, `ctl login`
+
+Plugins (`IGameActions.LogOutAsync`, `EnterWorldAsync`), Decal's `Hooks.Logout` and `achost ctl`
+can log the character out to the character list - with the game minimized or not - and enter the
+world again, as the same character or another of the account's, with the game shown or parked off
+screen. **No password is involved**: logging
+out to the character list keeps the account connected, and entering the world names only the
+character. A session that has ended - the client disconnected or closed, the account booted -
+needs a full login, with the password, and **nothing here ever does one**: `login` refuses, saying
+so. `SessionControl` (`src/AC.Host/Actions`) does both, and checks afterwards that both ends agree.
+
+**Which way, as AC:Unreal allows it** (live, 2026-10-05: the Virindi Tank repository's `docs/live-tests/live-2026-10-05-b.md`,
+section 7). *A logout always goes by the message*: CharacterLogOff (0xF653, empty), put into the
+client's stream by the relay. AC:Unreal takes it unasked - it logs `CharacterLogOff (server)` and
+`Logged off — returned to character select`, shows its character select, and **stays connected**,
+so entering again needs no password. There is no safe key: AC:Unreal's Log Out (LOGOUT) is bound
+only with a modifier - the retail keymap's Ctrl+Q and Alt+X, the player's own keymap Shift+Esc -
+and a modifier posted by the overlay does not reach its keymap as one. Ctrl+Q came to it as Q, its
+autorun (a toggle), and ran the character 22 m into a fence. So `ctl logout keys` goes by the
+message too, and says why in the log; before the message goes, every key held for plugins is let
+go, and nothing is pressed to stop a movement of the client's own. *Entering always goes by the
+character select's own Enter, clicked* through the overlay - the character's row, then the Enter
+button - and the client sends its CharacterEnterWorldRequest and CharacterEnterWorld itself.
+Entering by messages, put to the client unasked, does not work and is not done: the server's login
+reached AC:Unreal - its log has the PlayerDescription and PlayerCreate, and it even sent
+LoginComplete - but its character select stayed up, since only its own Enter moves its screens to
+the world (no `EnterWorld place`, no `UIFlow mode -> 6`). Nor does its character select take the
+Enter key: two presses did nothing. `ctl login <character> messages` goes by the click and says why.
+Entering needs the overlay attached and the game not minimized (parked off-screen with `ctl window
+keep on` is fine); otherwise it is refused, saying so. Both need acting to be allowed.
+
+**The click.** AC:Unreal draws its character select from the retail layout charactermanagement
+(0x21000004, in its `Plugins\ACEClient\Docs\UI\Resolved`): 800 by 600, unscaled and centred, black
+around it - at 560,240 of the live 1920 by 1080 window. The host asks the overlay for a click at
+layout points - the character's row, 122,220 for the first and 16 pixels lower for each next, in the
+server's order; then the Enter button's middle, 344,394 - and the overlay places the layout in the
+window's client area (shrunk to fit only in a smaller window), brings the pointer there, posts the
+move, the button's press and its release a moment apart, then the next point, and puts the pointer
+back where the player had it. The pointer is moved as well because Unreal counts a click only over
+the button its idea of the pointer is over, and it reads that from the real pointer. The messages
+are marked as the overlay's, so its own windows - Virindi Tank's covers the character list - never
+take them. The click rides in the overlay's input frame (`OverlayInput.Click`) with an id the
+overlay makes it once by; the overlay's log (`ACUnrealOverlay.log`, beside it) says where it
+clicked.
+
+**The client's Desktop UI Scale.** Since release 94 AC:Unreal has a "Desktop UI Scale" option,
+which it keeps as `DesktopUIScale` under `[ACE.Presentation]` in `Saved\Config\Windows\
+GameUserSettings.ini` (100% to 300% in quarter steps; 100% when the line is missing). It is
+Unreal's DPI scale for the whole viewport, so the character select is drawn that much larger - but
+never larger than the largest quarter step at which 800 by 600 fits the window: 200% in a 1920 by
+1080 window is 175%, the layout 1400 by 1050 at 260,15. The host reads the option
+(`ClientSettingsWatcher`, read-only) and the click carries it (`ui_scale`); the overlay, which knows
+the window, applies the client's limit (`native/ACUnrealOverlay/client_ui.h`, worked out from
+ACUnreal.exe release 96, as its own tests state it: 200% at 3840 by 2160, 175% at 1920 by 1080, 100%
+at 800 by 600). The overlay's own drawing does not change with it: the option scales Unreal's
+widgets, not the window or its swap chain. `ctl status` shows the scale (`ui scale`). Not yet seen
+live at anything but 100%.
+
+**What is known**, from the captures and from AC:Unreal's own log (`Saved\Logs\ACUnreal.log`):
+
+- The client logs off with CharacterLogOff, empty, sent again every two seconds until answered
+  (3 or 4 times); ACE answers about six seconds later - the logging-out motion - with
+  CharacterLogOff, the character list and its name, the three in one packet. The client logs
+  `[ACE] CharacterLogOff (0xF653) sent`, `[ACE] CharacterLogOff (server)`, `[ACE] Logged off —
+  returned to character select` and `UIFlow mode -> 3 layout=0x21000004`.
+- The client enters with CharacterEnterWorldRequest - logging `EnterWorld request character=…` and
+  `UIFlow mode -> 0` - ACE answers the ready, the client names the character, and the login
+  follows; the client logs `PlayerCreate` and `LoginComplete (exited portal space)`, sends
+  LoginComplete (0x00A1), and about a second later `UIFlow mode -> 6 layout=0x21000005`. Its log
+  names its screens: 2 the login screen, 3 the character select, 6 the game, 0 between.
+- ACE handles CharacterLogOff only for a character in the world, and the two entering messages only
+  at the character list; it turns a character down with CharacterError (0xF659) - 13 for one still
+  in the world, which can happen just after a logoff: the report says to try again in a few seconds.
+- Every captured logoff the player made was followed, 1.0-1.6 s later, by the client closing the
+  session: that was the player, at the character select. A logoff by the message is not: live, the
+  client stayed connected at its character select for as long as it was watched.
+
+**What is assumed**, until a live test says otherwise (the Virindi Tank repository's `docs/live-tests/relog-plan.md`): that the
+click on the character select's row and Enter, posted with the pointer brought there, enters the
+world as a player's click does, the game window shown or behind another one.
+
+**The checks, and what is done when one fails.** A logout is done when the server has answered and
+the client, watched for 3 s more, is at its character select by its log - or, with no log to read,
+has not acted in the world since (a weak sign: an idle client seldom acts). A client still showing
+the world has no key pressed for it: the player is asked, in a warning, to log out in the game, and
+the client's own CharacterLogOff - which ACE, at the character list already, drops - is answered
+with the server's own CharacterLogOff, list and name, the very bytes; after 60 s with none, it is
+reported. A client that went on to its login screen, or a session that ended, is reported as the
+end of the session. Entering is done once the server has created the character and the client
+shows the game by its log (`UIFlow mode -> 6`) - its LoginComplete alone is not enough where its
+log can be read, since AC:Unreal sent one while it stayed at its character select; where the log
+cannot be read, LoginComplete is. A client that does not ask to enter within 5 s of the click is
+reported, with the screen its log says; one the server created the character for that still shows
+its character select 30 s later has the character logged off again, so both ends are back at the
+character list and the character is not left standing in the world unplayed. The client's log is
+read where the running client writes it (`ClientLog`, `src/AC.Host.Runtime`), opened and closed at
+each read so the client can always rename it; a host relaying a capture or a test transport reads
+none.
+
+Plugins hear what a player's own relog tells them: `LoggingOff` once the logoff is asked for
+(Decal's Logoff, Requested, on which Virindi Tank stops its macro), `LoggedOff` once it is done
+(Logoff, Authorized), the account's characters (`IWorldView.AccountCharacters`, Decal's
+`CharacterFilter.Characters` and `AccountName`), then a login. `IWorldView.Phase` says where the
+session stands. Virindi Tank has no meta action or command of its own for logging out or in.
+
+**Entering asked for while a logout is being finished** - the server has the character out, and the
+client is being watched for its 3 s - is not refused: it waits, and starts once the logout is done,
+or ends with it if the logout does not finish (`Stage.AfterLogOut`; `ctl status` shows it as "; then
+enter the world as ..."). Mag-Filter asks a second after the character list comes, which is then.
+Asked for before the server has answered the logout, it is refused as ever.
+
+`ctl logout` and `ctl login` wait up to 25 s and answer how it ended - "Logged Testchar I
+(0x50000006) out to the character list: the client shows its character select." - or that it is
+still under way. `ctl status` adds `phase` (where the session stands), `relog` (the one under way,
+or how the last ended) and, with the client's log read, `client` (its screen). A host that joined a
+session with nothing handed over can put itself right: `ctl logout`, then `ctl login 1`.
 
 ### Restarting the host with the game connected
 
@@ -597,8 +885,11 @@ server's name. So the host stopping hands the session over, and the one starting
   tells them, in a login's order: `ServerConnected`, `PlayerIdentified` (before the character's
   object is described, as at a login), `ObjectCreated` for the character, then what it carries
   and wears, then everything around it, `EnchantmentChanged` for each enchantment, and
-  `CharacterUpdated`. Decal's plugins hear Login, every CreateObject, and LoginComplete once all are
-  described. A new login instead lets the file go; the numbering starts over at its handshake.
+  `CharacterUpdated`. Decal's plugins hear Login - once the character's object is told of, so
+  that the character filter reads as a login's description left it: id, name, level, experience
+  - every CreateObject, the login's messages, and LoginComplete on the client's word that it had
+  entered, retold after them. A new login instead
+  lets the file go; the numbering starts over at its handshake.
 - **Nothing handed over.** A host that crashed or was killed leaves nothing, and neither does a
   host older than this. The next one knows it joined in the middle: it says so in its log, `ctl
   status` shows `session    joined while you were in the world: ...`, and once a character is
@@ -611,7 +902,38 @@ server's name. So the host stopping hands the session over, and the one starting
   never come, until the player logs in afresh.
 
 `ctl status` says `session    carried on from the host that stopped at 13:42:05` when a host has
-carried a session on. Not carried over: the plugins' own state (each starts as at a login),
+carried a session on.
+
+Every handover says where it went, whether or not it happened. The host stopping logs the whole
+path it wrote ("Handed the session over in C:\...\handover-9100.bin (7245 message(s), written at
+05:46:47)"), or that it wrote nothing there and why. The host starting always logs, at Info, the
+whole path it looked at and what it found: the session taken, with the same path; why a file there
+was not taken (too old, another relay's, unreadable - and deleted all the same); or "No session
+was handed over: there is nothing at C:\...\handover-9100.bin", followed by what that folder does
+hold - so that, beside the stopping host's line, a file written where the new host does not see it
+can be told from one never written. Only a file not found counts as nothing there: the file is
+opened, not asked after, since asking answers no for a file that is there and cannot be looked at;
+and nothing in it - a garbled file included - stops the host from starting. `ctl status` adds a
+line with the same story and its end: `handover   none at C:\...\handover-9100.bin`;
+`handover   taken from C:\...\handover-9100.bin, written at 05:46:47 (7245 message(s)): carried on`
+(or `to be carried on once the game is heard from`, or `let go:` and why); or
+`handover   not taken: ...`.
+A host stopped again before the game was heard from - the update run twice in a row - hands on
+what it was handed, as it came and as old as it was, rather than losing it between two restarts.
+`tools\update-agent.ps1` follows it end to end: it prints the file the Agent that stopped left, the
+new Agent's handover line, and a warning naming the file and the log to read when the new Agent
+left a file there untaken.
+
+Start and update the Agent from a shell of your own. A shell inside a packaged (MSIX) app - the
+Claude desktop app's, for one - may have its writes to `%LOCALAPPDATA%` redirected into that app's
+private copy (`%LOCALAPPDATA%\Packages\<app>\LocalCache\Local`). An Agent started from there keeps
+its settings, its plugins' settings and the session it hands over in that copy, where an Agent
+started normally never looks: that is how a handover was once left untaken. `tools\start-game.ps1`,
+`tools\update-agent.ps1` and `tools\install-plugin.ps1` (into an Agent under `%LOCALAPPDATA%`)
+test for it with `tools\PackageCheck.ps1` - a probe file written and looked for under the
+packages' copies - and stop, saying so.
+
+Not carried over: the plugins' own state (each starts as at a login),
 actions and lines still queued to go out, `ctl chat`'s history, and Decal plugins' view of the
 login messages themselves - ServerDispatch is not given them again. `HostRuntimeOptions.NoHandover`
 turns all of it off; a replay never hands over.

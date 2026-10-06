@@ -470,6 +470,22 @@ struct VvsBarSettings {
     bool horizontal = false;
 };
 
+// AC:Unreal's own interface, as its settings say: since release 94 a bar of its own plugins'
+// buttons, kept as "__bar" in its Saved\ClientPlugins\settings.json and starting 8 in from the
+// left and 80 down, 62 wide and growing with its buttons - 8,80 to 70,250 live with four, so
+// taken as 214 high, room for a fifth - in its interface units, which its Desktop UI Scale
+// multiplies into pixels. The overlay starts its own bars clear of it.
+struct ClientUiSettings {
+    bool known = false;
+
+    // The Desktop UI Scale the player chose, 1 to 3 in quarter steps; ClientUiScale says what the
+    // client draws at in a window of a given size.
+    double ui_scale = 1.0;
+
+    // The plugin bar's left, top, width and height, in interface units.
+    float plugin_bar[4] = {8.0f, 80.0f, 62.0f, 214.0f};
+};
+
 struct State {
     Status status;
 
@@ -481,10 +497,19 @@ struct State {
 
     VvsBarSettings vvs_bar;
 
+    // The client's own plugin bar and UI scale; not known from a host that predates them, or one
+    // that could not read the client's settings.
+    ClientUiSettings client_ui;
+
     // Who wants the next key the player presses - a hotkey window's Set - or empty. The overlay
     // catches that key, keeps it from the game, and sends "key-captured" to this owner with
     // "vk,ctrl,shift,alt", or "cancel" for Escape.
     std::string key_capture;
+
+    // The player asked to keep playing while the game is minimized: minimizing the window
+    // sends it off-screen and slows its frames instead, so the game still takes the keys held
+    // for plugins. False from a host that predates it, which leaves minimizing alone.
+    bool keep_playing_minimized = false;
 
     // Every hotkey bound, whoever it belongs to.
     std::vector<Hotkey> hotkeys;
@@ -528,6 +553,30 @@ struct Command {
     // for a button the name is "press" and value is empty. Empty when the command did
     // not come from a control.
     std::string control_id;
+};
+
+// A click the host asks to have made in the game's window, once: the points of a layout the
+// game draws centred in its window - AC:Unreal's character select is the retail 800 by 600
+// one - clicked in turn. It travels in the input frame:
+// {"input":{"held":[],"sequence":4,"click":{"id":1759700000123,"layout_width":800,
+// "layout_height":600,"points":[[122,220],[344,394]],"ui_scale":1.75}}}, repeated for a moment
+// so a lost frame cannot lose it; the id says whether it has been made already.
+struct Click {
+    int64_t id = 0;
+    int layout_width = 0;
+    int layout_height = 0;
+
+    // The client's Desktop UI Scale as the player chose it, 1 to 3: the layout is drawn that much
+    // larger, as far as the window lets it (ClientUiScale). 1, its own size, when the host does
+    // not say.
+    double ui_scale = 1.0;
+
+    struct Point {
+        int x = 0;
+        int y = 0;
+    };
+
+    std::vector<Point> points;
 };
 
 }  // namespace overlay

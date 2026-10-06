@@ -30,6 +30,111 @@ namespace AC.Host.World
         public event EventHandler<string> LoggedOff;
 
         /// <summary>
+        /// Raised when the client asks the server to log the character off - the player chose Log
+        /// Out, or the host asked for them - once for each logoff, while the character is still in
+        /// the world and before the server agrees. Decal told its plugins the same, as Logoff with
+        /// LogoffEventType.Requested, and Virindi Tank stopped its macro on it.
+        /// </summary>
+        public event EventHandler LoggingOff;
+
+        /// <summary>
+        /// Where the session stands, as the messages either way say it: set by the character list,
+        /// the client asking to enter the world and naming the character, the character arriving,
+        /// the client asking to log off, the server agreeing, and the session ending.
+        /// </summary>
+        public SessionPhase Phase { get; private set; }
+
+        /// <summary>
+        /// The character the client last asked to enter the world as, by the id its
+        /// CharacterEnterWorld named; 0 until one has been named this time.
+        /// </summary>
+        public uint EnteringCharacterId { get; private set; }
+
+        /// <summary>
+        /// The server's reason the last time it turned a character down at the character list -
+        /// ACE's CharacterError, 13 for one still in the world - or 0.
+        /// </summary>
+        public uint LastCharacterError { get; private set; }
+
+        /// <summary>The server listed the account's characters: the session is at the character list.</summary>
+        internal void NoteCharacterList()
+        {
+            Phase = SessionPhase.CharacterList;
+            EnteringCharacterId = 0;
+        }
+
+        /// <summary>
+        /// The client asked to enter the world (CharacterEnterWorldRequest). From the character list -
+        /// or from a session the host joined there, knowing nothing yet.
+        /// </summary>
+        internal void NoteEnterWorldRequested()
+        {
+            if (Phase is SessionPhase.InWorld or SessionPhase.LoggingOff)
+                return;
+
+            Phase = SessionPhase.EnteringWorld;
+            EnteringCharacterId = 0;
+            LastCharacterError = 0;
+        }
+
+        /// <summary>The client named the character entering the world (CharacterEnterWorld).</summary>
+        internal void NoteEnterWorld(uint characterId)
+        {
+            if (Phase is SessionPhase.InWorld or SessionPhase.LoggingOff)
+                return;
+
+            Phase = SessionPhase.EnteringWorld;
+            EnteringCharacterId = characterId;
+            LastCharacterError = 0;
+        }
+
+        /// <summary>The server turned a character down: whoever was entering is back at the character list.</summary>
+        internal void NoteCharacterError(uint error)
+        {
+            LastCharacterError = error;
+            if (Phase == SessionPhase.EnteringWorld)
+            {
+                Phase = SessionPhase.CharacterList;
+                EnteringCharacterId = 0;
+            }
+        }
+
+        /// <summary>
+        /// The client asked to log the character off (CharacterLogOff, from the client). Said to
+        /// plugins once a logoff: the client asks again every two seconds until the server answers.
+        /// </summary>
+        internal void NoteLogOffRequested()
+        {
+            if (Phase == SessionPhase.LoggingOff || (Phase != SessionPhase.InWorld && Character.Id == 0))
+                return;
+
+            Phase = SessionPhase.LoggingOff;
+
+            // A character the host never saw arrive - it joined the session under way - is not said
+            // to be leaving: plugins never heard it was there.
+            if (Character.Id != 0)
+                LoggingOff?.Invoke(this, EventArgs.Empty);
+        }
+
+        /// <summary>
+        /// Something only a character in the world sends or is sent went by while the host knew
+        /// nothing of the session - it joined one under way - so a character is in the world,
+        /// whoever it is.
+        /// </summary>
+        internal void NoteInWorldTraffic()
+        {
+            if (Phase == SessionPhase.None)
+                Phase = SessionPhase.InWorld;
+        }
+
+        /// <summary>The server booted the account: there is no session to go back to the character list in.</summary>
+        internal void NoteBooted()
+        {
+            Phase = SessionPhase.None;
+            EnteringCharacterId = 0;
+        }
+
+        /// <summary>
         /// How far past a vendor's use radius the character may stand before its window is taken
         /// to have closed. ACE closes a vendor when the distance between the edges of the two
         /// bodies passes the use radius; the centres are further apart than the edges by the two
@@ -173,6 +278,8 @@ namespace AC.Host.World
             ServerName = null;
             ServerPopulation = 0;
             SetAccount(null, null);
+            Phase = SessionPhase.None;
+            EnteringCharacterId = 0;
         }
 
         /// <summary>The character has died. The message is the server's, as the chat window shows it.</summary>

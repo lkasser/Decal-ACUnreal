@@ -10,4 +10,6 @@ through a `System.Data.SQLite.dll` that is IL-only and calls only SQLite's stand
 ship a 32-bit `sqlite3.dll`, which this 64-bit host cannot load. Decal.Compat lays this one out as
 `plugins\Decal.Compat\native\sqlite3.dll` and gives it to a plugin in place of its own
 (`DecalPluginLoadContext.ResolveNative`). It exports everything that wrapper calls but
-`sqlite3_key`, which only an encrypted database needs.
+`sqlite3_key`, which only an encrypted database needs. The wrapper itself (1.0.61) reads a blob
+with 32-bit pointer arithmetic, which each plugin's working copy has widened
+(`src/Decal.Compat/PointerRewrite.cs`).

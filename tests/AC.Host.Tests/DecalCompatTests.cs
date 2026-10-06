@@ -489,7 +489,7 @@ namespace AC.Host.Tests
             Assert.Equal(0, runtime.Core.CharacterFilter.LoginStatus);
 
             host.WorldState.GetOrAdd(MacroTestHost.PlayerId, out _).Name = "Tester";
-            host.WorldState.SetPlayerId(MacroTestHost.PlayerId);
+            host.EnterWorld();
 
             Assert.Equal(new[] { "logoff Authorized Tester", $"login {MacroTestHost.PlayerId:X8}", "complete" }, heard);
         }

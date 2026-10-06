@@ -59,6 +59,24 @@ namespace AC.Host.Plugins
         IGameInput Input { get; }
 
         /// <summary>
+        /// What the game's window is doing - minimized, drawing, parked off-screen in place of
+        /// minimized - as the overlay inside the game last said; <see cref="GameWindowState.Unknown"/>
+        /// without one. Everything done over the network goes on whatever the window does; only
+        /// <see cref="Input"/> depends on the game taking keys, which a minimized game may not.
+        /// </summary>
+        GameWindowState GameWindow { get; }
+
+        /// <summary>
+        /// AC:Unreal's own client plugins as the client's settings say the player has switched them
+        /// on: which are enabled, with which permissions - its Unattended Combat Manager, a Virindi
+        /// Tank of the client's own, among them (<see cref="ClientPluginsState.UcmEnabled"/>).
+        /// <see cref="ClientPluginsState.Unknown"/> while there is no client whose settings can be
+        /// read. Enabled is all that can be seen: a client plugin acts only once the player presses
+        /// its Start, and whether it is running the client writes nowhere.
+        /// </summary>
+        ClientPluginsState ClientPlugins => ClientPluginsState.Unknown;
+
+        /// <summary>
         /// The client's own data files, where ids become names and colours. Check
         /// <see cref="IGameData.IsAvailable"/>: a host started without them answers
         /// nothing rather than guessing.
@@ -147,6 +165,15 @@ namespace AC.Host.Plugins
         /// </summary>
         event EventHandler<string> LoggedOff;
 
+        /// <summary>
+        /// The character has been asked to leave the world - the player chose Log Out, or a plugin
+        /// did (<see cref="IGameActions.LogOutAsync"/>) - and the server has yet to agree; once a
+        /// logoff, while <see cref="Character"/> still describes it. <see cref="LoggedOff"/> follows
+        /// when the server has taken it out. Decal's Logoff with LogoffEventType.Requested, on which
+        /// Virindi Tank stopped its macro.
+        /// </summary>
+        event EventHandler LoggingOff;
+
         /// <summary>An object entered the host's view, or was re-sent in full.</summary>
         event EventHandler<WorldObject> ObjectCreated;
 
@@ -230,6 +257,17 @@ namespace AC.Host.Plugins
         /// Game thread only.
         /// </summary>
         ChatCommandOutcome RunChatCommand(string text, IPlugin from);
+
+        /// <summary>
+        /// Puts a row on the status HUD another plugin shows (<see cref="IStatusRows"/>) - Virindi
+        /// HUDs' Status HUD - or changes its value: what Virindi HUDs' StatusModel.UpdateEntry did
+        /// for every Decal plugin. Nothing happens where no plugin shows one. Game thread only. Has
+        /// a default, which shows nothing, so another IHost needs nothing.
+        /// </summary>
+        /// <param name="colour">The row's colour as 0xAARRGGBB; white unless the plugin names one.</param>
+        void UpdateStatusRow(string plugin, string entry, string value, long colour = 0xFFFFFFFF)
+        {
+        }
 
         /// <summary>
         /// The character went into portal space (true) - the server teleported it - or came
@@ -360,5 +398,62 @@ namespace AC.Host.Plugins
         /// arrival, not UseDone.
         /// </summary>
         Task<bool> SalvageAsync(uint toolId, IReadOnlyList<uint> itemIds);
+
+        /// <summary>
+        /// Hands <paramref name="amount"/> of an item the character carries to a player or an
+        /// NPC, as dropping it on them does. The server walks the character there first; what
+        /// comes of it is the item leaving the packs, or the NPC's refusal in the chat.
+        /// </summary>
+        Task<bool> GiveAsync(uint objectId, uint targetId, int amount);
+
+        /// <summary>
+        /// Logs the character out to the character list, as the game's own Log Out does - Decal's
+        /// Hooks.Logout. The account stays connected: nothing about the password is involved, and
+        /// <see cref="EnterWorldAsync"/> brings a character back. Only from the world
+        /// (<see cref="AC.Host.World.IWorldView.Phase"/>). The server takes a few seconds, the
+        /// character playing its logging-out motion; plugins then hear what a player's own logoff
+        /// tells them - <see cref="IHost.LoggingOff"/> as it is asked for, <see cref="IHost.LoggedOff"/>
+        /// once it is done, and the account's characters listed again
+        /// (<see cref="AC.Host.World.IWorldView.AccountCharacters"/>).
+        /// </summary>
+        Task<bool> LogOutAsync();
+
+        /// <summary>
+        /// Enters the world as one of the account's characters
+        /// (<see cref="AC.Host.World.IWorldView.AccountCharacters"/>), from the character list - as
+        /// choosing it there and clicking Enter does, which is what the overlay does in AC:Unreal's
+        /// character select, so this needs the overlay attached and the game not minimized. No
+        /// password is involved, which is why this works only while the account is still connected
+        /// at the character list, never after the session has ended. Plugins then hear a login:
+        /// <see cref="IHost.PlayerIdentified"/>, every object, and the rest.
+        /// </summary>
+        Task<bool> EnterWorldAsync(uint characterId);
+
+        /// <summary>
+        /// Asks a player to join the character's fellowship, as the fellowship panel's Recruit
+        /// does - Decal's Hooks.FellowshipRecruit. The server says in chat what came of it, and a
+        /// member joining is the fellowship's next update (<see cref="ICharacterView.Fellowship"/>).
+        /// False where actions cannot be sent, as for the rest; an implementation that has no
+        /// fellowship actions says false.
+        /// </summary>
+        Task<bool> FellowshipRecruitAsync(uint playerId) => Task.FromResult(false);
+
+        /// <summary>
+        /// Leaves the fellowship, or - <paramref name="disband"/>, as its leader - ends it for
+        /// everyone: the panel's Quit and Disband, Decal's FellowshipQuit and FellowshipDisband.
+        /// </summary>
+        Task<bool> FellowshipQuitAsync(bool disband) => Task.FromResult(false);
+
+        /// <summary>Dismisses a member, as the fellowship's leader: Decal's FellowshipDismiss.</summary>
+        Task<bool> FellowshipDismissAsync(uint playerId) => Task.FromResult(false);
+
+        /// <summary>Makes another member the leader, as the leader: Decal's FellowshipGrantLeader.</summary>
+        Task<bool> FellowshipAssignLeaderAsync(uint playerId) => Task.FromResult(false);
+
+        /// <summary>
+        /// Lets every member recruit (<paramref name="open"/>), or only the leader, as the leader:
+        /// Decal's FellowshipSetOpen.
+        /// </summary>
+        Task<bool> FellowshipSetOpenAsync(bool open) => Task.FromResult(false);
     }
 }

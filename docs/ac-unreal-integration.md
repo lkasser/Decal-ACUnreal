@@ -5,6 +5,11 @@ speculation; where something is unknown it says so.
 
 ## The client that was examined
 
+Release 84 is described below. Release 96 (`2026.10.06.96`) was examined again on 2026-10-06.
+It is the first release here to have the client's own plugin system, which came with release 94.
+The section after this one sums up that system, and
+[ac-unreal-96-notes.md](ac-unreal-96-notes.md) has the detail.
+
 | | |
 |---|---|
 | Product | AC:Unreal / AC:VR, release 84 (`2026.09.28.84`) |
@@ -15,7 +20,39 @@ speculation; where something is unknown it says so.
 | Game module | one project plugin, `ACEClient` |
 | Protocols | ACE and GDLE login; GDLE verified only through character selection |
 
-## The blocking finding: there is no plugin surface
+## Since release 94: the client's own Lua plugins, and UCM
+
+Release 84 had no plugin surface. Everything in the next section is still true of Decal, but since
+release 94 the client hosts plugins of its own:
+
+- **Sandboxed Lua 5.4.** A plugin is a folder holding `plugin.json` and `main.lua`.
+  - `main.lua` returns `tick(snapshot, profile)`, which hands back at most one *intent* (an action) per call.
+  - The snapshot is curated by the client: vitals, skills, inventory, nearby targets and corpses, and recent chat, combat and portal events.
+  - The actions fall into eight permission groups: `cast`, `combat`, `navigation`, `inventory`, `loot`, `say`, `fellowship` and `confirm`. The player grants them in `/plugins`.
+  - There is no `io`, `os`, `package` or `require`, no DLL or .NET loading, no files, no sockets and no IPC.
+  - The plugin's interface is a button on the client's plugin bar and a generic settings window. It cannot draw.
+- **Shipped plugins.** The client ships three: UCM, Waypoint and a loot profile editor. Third-party plugins look possible under `Saved\ClientPlugins\Installed\<id>\`, but that is undocumented and untried.
+- **UCM, the Unattended Combat Manager.** It is a Virindi Tank of the client's own.
+  - It converts Virindi Tank's `.utl`, `.nav`, `.met` and `.usd` files into its own JSON.
+  - It runs nearly all of Virindi Tank's meta engine.
+  - Its loot engine is based on VTClassic.
+  - It is off by default, is enabled per plugin in `/plugins`, and acts only after its Start is pressed, each session.
+
+**What this means for this project.**
+- The plugin system cannot host Decal, Decal plugins, .NET or this host.
+- A Lua plugin cannot talk to any of them, except through the game server as chat.
+- So the architecture stays the same: the proxy, the injected overlay and Decal.Compat, which run the player's real Decal plugins and this Virindi Tank beside the client.
+
+**UCM and our Virindi Tank must not play one character at once.** UCM would carry on beside our injected casts, attacks and loot moves, and the two would fight over targets, buffs and corpses. The host guards against this:
+
+- It reads the client's `Saved\ClientPlugins\settings.json`, read-only. There the client keeps each plugin's grant as `"<id>": "enabled:<permissions>"` or `"<id>": "disabled"`.
+- It polls the file every two seconds and re-reads it when it changes.
+- It says in its log and in `ctl status` (`ac plugins`) when UCM, or any client plugin granted `cast`, `combat`, `navigation`, `inventory` or `loot`, is enabled.
+- Plugins see the same through `IHost.ClientPlugins` (host contract 12).
+- Virindi Tank warns in chat when its macro starts while UCM is enabled: "AC:Unreal's own Unattended Combat Manager is enabled; running both may conflict. Switch UCM off in the client's plugin list." It starts anyway.
+- Only *enabled* can be seen, not *running*. Enabling never starts UCM; its Start is pressed in the client, and the client writes the running state nowhere.
+
+## The blocking finding: there is no plugin surface (release 84)
 
 Virindi Tank was a **Decal** plugin. Decal injected itself into the retail
 `acclient.exe`, read the client's memory through its filters, and handed managed
@@ -59,7 +96,7 @@ registers gameplay commands worth driving.
 **Conclusion: the Virindi plugins cannot be retargeted onto AC:Unreal by
 recompiling them.** There is no host to load them and no API to call. Whatever
 "upgrade for Unreal 5" ends up meaning, it is not a port of the Decal integration
-layer.
+layer. This still holds in release 96, whose plugin host runs only sandboxed Lua.
 
 ## What was portable anyway, and is now ported
 
@@ -87,6 +124,14 @@ written, with an in-launcher updater. A host-side extension point (even just a
 local WebSocket or named pipe exposing object/character state plus an action
 channel) would make everything else straightforward. This is a Discord
 conversation with the author, not an engineering task.
+
+Since release 94 the author has built a plugin host, though one that is sandboxed and
+in-process. That makes asking more realistic. The useful requests, smallest first:
+- a log line when a client plugin starts or stops;
+- an "external automation active" signal that UCM respects, such as a lock file under `Saved/`;
+- later, a documented local IPC permission for out-of-process hosts.
+
+See [ac-unreal-96-notes.md](ac-unreal-96-notes.md), section 7.
 
 ### B. Network proxy between client and server (chosen; in progress)
 
@@ -134,6 +179,28 @@ right one.
 OS-level clicks and keystrokes against the UI, with OCR or pixel matching for
 state. No protocol work, but no reliable item properties either, which is exactly
 what loot rules are made of.
+
+## A minimized client
+
+Read from the installed client on 2026-10-05; the reasoning, the design built on it, and
+what remains assumed are in `native/docs/d3d12-overlay-design.md` section 9.
+
+- **Windowed:** `Saved/Config/Windows/GameUserSettings.ini` has `FullscreenMode=2`, and
+  nothing in it or in the logged cvars caps the frame rate. The log's frame counter runs at
+  about 250 frames a second through hours of idle play.
+- **The binary carries Unreal's minimized and background switches:** `t.IdleWhenNotForeground`
+  ("Prevents the engine from taking any CPU or GPU time while not the foreground app."),
+  never set by the client, and `tick.MinimizedSyncDrawToGPU` ("True means we will wait for
+  GPU idle when minimized..."). So the engine keeps ticking while minimized, as the
+  client's unbroken server session shows.
+- **Input:** the input plugins mounted are `EnhancedInput`, `InputDebugging`,
+  `XInputDevice` and `OpenXR`; no `GameInput` plugin is mounted. Keys arrive as window
+  messages; raw input is the mouse's (`WindowsApplication.UseWorkerThreadForRawInput 0`).
+- **The client tracks being the active app**, at least for sound (`ActiveSoundOnly=1` under
+  `[ACE.Presentation]`).
+- **Unknown, and settled only by playing:** whether it presents frames while minimized, and
+  whether its movement code takes keys then. The overlay and the host now log both
+  (the Virindi Tank repository's `docs/live-tests/minimized-plan.md`).
 
 ## Server-policy caveat, stated plainly
 

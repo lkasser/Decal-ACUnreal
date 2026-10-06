@@ -21,6 +21,9 @@
     </ProjectReference>
     <ProjectReference Include="..\Decal.Adapter\Decal.Adapter.csproj" />
     <ProjectReference Include="..\VirindiViewService\VirindiViewService.csproj" />
+    <ProjectReference Include="..\VirindiHotkeySystem\VirindiHotkeySystem.csproj" />
+    <ProjectReference Include="..\VirindiHUDs\VirindiHUDs.csproj" />
+    <ProjectReference Include="..\uTank2\uTank2.csproj" />
     <ProjectReference Include="..\Decal.FileService\Decal.FileService.csproj" />
     <ProjectReference Include="..\Microsoft.DirectX\Microsoft.DirectX.csproj" />
   </ItemGroup>

@@ -515,6 +515,26 @@ namespace AC.Host.Overlay
         public bool? Horizontal { get; set; }
     }
 
+    /// <summary>
+    /// What AC:Unreal's own interface takes up: since release 94 a bar of its own plugins' buttons,
+    /// drawn at its Desktop UI Scale. The overlay starts VVS's bar, and Decal's bar down a side, clear
+    /// of it - never moving one the player has placed.
+    /// </summary>
+    public sealed class OverlayClientUi
+    {
+        /// <summary>
+        /// The Desktop UI Scale the player chose, 1 to 3 in quarter steps. The client draws at the
+        /// largest quarter step up to it at which an 800 by 600 layout fits its window.
+        /// </summary>
+        [JsonPropertyName("ui_scale")]
+        public double UiScale { get; set; } = 1.0;
+
+        /// <summary>The client's plugin bar, [x, y, width, height] in its interface units - pixels at 100%.</summary>
+        [JsonPropertyName("plugin_bar")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public double[] PluginBar { get; set; }
+    }
+
     /// <summary>A plugin's own button on a view's title bar. Pressing it sends "press" naming it.</summary>
     public sealed class OverlayTitleButton
     {
@@ -810,6 +830,49 @@ namespace AC.Host.Overlay
         /// <summary>Counts up with each frame, so a repeat is told from a new instruction in a log.</summary>
         [JsonPropertyName("sequence")]
         public long Sequence { get; set; }
+
+        /// <summary>
+        /// A click the overlay is to make in the game's window, once, or null. Sent in every
+        /// frame for a moment after it is asked for, so a lost frame cannot lose it; its id is
+        /// what makes it one click.
+        /// </summary>
+        [JsonPropertyName("click")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public OverlayClick Click { get; set; }
+    }
+
+    /// <summary>
+    /// A click in the game's window: points of a layout the game draws centred in its window,
+    /// at the layout's own size where it fits and shrunk to fit where it does not - as AC:Unreal
+    /// draws its character select, the retail 800 by 600 layout, enlarged by its Desktop UI Scale.
+    /// The overlay brings the pointer to each point in turn, presses the left button there and lets
+    /// it go, and puts the pointer back afterwards.
+    /// </summary>
+    public sealed class OverlayClick
+    {
+        /// <summary>Different for every click a host ever asks for, so the overlay makes each once.</summary>
+        [JsonPropertyName("id")]
+        public long Id { get; set; }
+
+        [JsonPropertyName("layout_width")]
+        public int LayoutWidth { get; set; }
+
+        [JsonPropertyName("layout_height")]
+        public int LayoutHeight { get; set; }
+
+        /// <summary>The points, in order, each [x, y] in the layout.</summary>
+        [JsonPropertyName("points")]
+        public List<int[]> Points { get; set; } = new List<int[]>();
+
+        /// <summary>
+        /// The Desktop UI Scale the player chose in AC:Unreal, 1 to 3 in quarter steps; absent for
+        /// 1. The overlay draws the layout that much larger, centred, but no larger than the
+        /// largest quarter step at which an 800 by 600 layout fits the window - the client's own
+        /// limit. An overlay that predates it clicks the layout at its own size.
+        /// </summary>
+        [JsonPropertyName("ui_scale")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public double? UiScale { get; set; }
     }
 
     /// <summary>The frame keys travel in: an object with one "input" member.</summary>
@@ -857,12 +920,30 @@ namespace AC.Host.Overlay
         public OverlayVvsBar VvsBar { get; set; }
 
         /// <summary>
+        /// AC:Unreal's own interface, as its settings say: its Desktop UI Scale and where its plugin
+        /// bar is, so the overlay starts its own bars clear of it. Absent when the client's settings
+        /// are not read.
+        /// </summary>
+        [JsonPropertyName("client_ui")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public OverlayClientUi ClientUi { get; set; }
+
+        /// <summary>
         /// Who wants the next key the player presses, or empty: the overlay catches it, keeps it
         /// from the game and sends "key-captured" to that owner with "vk,ctrl,shift,alt", or
         /// "cancel" for Escape.
         /// </summary>
         [JsonPropertyName("key_capture")]
         public string KeyCapture { get; set; } = string.Empty;
+
+        /// <summary>
+        /// The player asked to keep playing while the game is minimized: the overlay then parks the
+        /// window off-screen, at about thirty frames a second, in place of minimizing it, so the
+        /// game goes on taking the keys held for plugins. The overlay says what the window is doing
+        /// in a "game-window" command: "minimized,drawing,parked", each 0 or 1.
+        /// </summary>
+        [JsonPropertyName("keep_playing_minimized")]
+        public bool KeepPlayingMinimized { get; set; }
 
         /// <summary>
         /// Moves only when the snapshot differs from the last one published, so the

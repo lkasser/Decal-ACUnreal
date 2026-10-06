@@ -41,12 +41,35 @@
 
         /// <summary>
         /// The character has left the world: ACE's answer once a logoff is done, followed by the
-        /// character list and the server's name. Carries nothing.
+        /// character list and the server's name. Carries nothing. The client sends the same opcode,
+        /// as empty, to ask for the logoff - and again every two seconds until it is answered.
         /// </summary>
         public const uint CharacterLogOff = 0xF653;
 
         /// <summary>The account's characters, sent at login and again whenever the character leaves the world.</summary>
         public const uint CharacterList = 0xF658;
+
+        /// <summary>
+        /// The server turning down a character at the character list - most often one asked to enter
+        /// the world that is still in it, or not the account's. Carries the reason as one word,
+        /// ACE's CharacterError.
+        /// </summary>
+        public const uint CharacterError = 0xF659;
+
+        /// <summary>
+        /// The client, at the character list, asking to enter the world. Carries nothing; the
+        /// server answers <see cref="CharacterEnterWorldServerReady"/>. Client to server.
+        /// </summary>
+        public const uint CharacterEnterWorldRequest = 0xF7C8;
+
+        /// <summary>The server ready for the client to say which character enters. Carries nothing.</summary>
+        public const uint CharacterEnterWorldServerReady = 0xF7DF;
+
+        /// <summary>
+        /// The client naming the character that enters the world: its id, then the account's name
+        /// as the character list gave it. Client to server; the login's messages are the answer.
+        /// </summary>
+        public const uint CharacterEnterWorld = 0xF657;
 
         public const uint ObjectCreate = 0xF745;
         public const uint PlayerCreate = 0xF746;
@@ -247,8 +270,28 @@
         /// <summary>Move part or all of one stack onto another. Source, target, amount.</summary>
         public const uint StackableMerge = 0x0054;
 
+        /// <summary>Hand an item to a player or NPC. Target, item, amount.</summary>
+        public const uint GiveObjectRequest = 0x00CD;
+
         /// <summary>The fellowship panel opened (1) or closed (0): vitals of fellows follow only while open.</summary>
         public const uint FellowshipUpdateRequest = 0x00A6;
+
+        // The fellowship panel's buttons, as ACE's GameActionType numbers them and its handlers read them.
+
+        /// <summary>Leave the fellowship, or as its leader disband it (1). A word.</summary>
+        public const uint FellowshipQuit = 0x00A3;
+
+        /// <summary>Dismiss a member, as the leader. The member's id.</summary>
+        public const uint FellowshipDismiss = 0x00A4;
+
+        /// <summary>Ask a player to join. The player's id.</summary>
+        public const uint FellowshipRecruit = 0x00A5;
+
+        /// <summary>Make another member the leader. The member's id.</summary>
+        public const uint FellowshipAssignNewLeader = 0x0290;
+
+        /// <summary>Let any member recruit (1), or only the leader (0). A word.</summary>
+        public const uint FellowshipChangeOpenness = 0x0291;
 
         /// <summary>The salvage panel's Salvage button. The tool, a count, then the items.</summary>
         public const uint CreateTinkeringTool = 0x027D;

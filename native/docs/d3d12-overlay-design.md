@@ -621,6 +621,40 @@ ones, and rebuild if they differ. That catches a resize path you did not hook, a
 fullscreen transition, and a second swap chain, and it turns "overlay stretched or
 invisible after alt-tab" into a self-correcting condition rather than a bug report.
 
+### As built, after the minimize of 2026-10-05
+
+The first build did less than the above: after every resize it ran its whole set-up again,
+making a new SRV heap while the ImGui backend, set up once, kept its fonts and images in the
+old one. The Virindi Tank repository's `docs/live-tests/minimized-2026-10-05.md` suspected that for the overlay drawing
+nothing after a restore. `native/test-render.ps1` - this file's hooks, the ImGui backends and
+the drawing code in a window of its own, with a stand-in for the host - minimizes and restores
+the way Unreal does (8 x 8 back buffers, a frame or two presented while iconic, a double
+restore, a minimize with no frame at all) and counts the overlay's pixels after each. On the
+player's RTX 3080 (driver 596.49) and on WARP the first build kept drawing through all of
+it: a descriptor from another heap happens to resolve there. It is still invalid D3D12, and
+the build now does this:
+
+- **Made once, kept for the session:** the device's objects, the SRV heap, an RTV heap of one
+  view per frame in flight, the command list, the fence, the ImGui context and backends. The
+  frames in flight are a fixed turn of `min(4, max(2, buffers at start))`, the same count as
+  the backend's vertex buffers, whatever the game's buffer count becomes.
+- **No back buffer held between frames.** Each frame takes the buffer it draws into with
+  `GetBuffer`, makes its view in its own slot and lets it go once submitted. A buffer held
+  across frames also stopped the game making a new swap chain for its window:
+  `CreateSwapChainForHwnd` gave `E_ACCESSDENIED` (render test 8, both adapters).
+- **The resize hooks** wait for the GPU and call the game's resize under the renderer's lock,
+  so no frame of the overlay's can take one of the old buffers mid-resize, and log the sizes
+  before and after.
+- **Each frame** compares the swap chain and its size, count and format with the last; a
+  change no resize hook saw is logged. A new format rebuilds the backend's pipeline for it.
+- **Frames on a degenerate display are not drawn at all**: the window iconic, or it or its back
+  buffers under 100 x 100. Such a frame never reaches ImGui, so it cannot move or save a
+  window. One that did is how three HUDs were saved at -5,-20 (section 9).
+- **Test presents** (`DXGI_PRESENT_TEST`) draw nothing and are not counted as frames.
+- **Every draw-path failure is logged** (capped), and so is the first frame drawn after
+  passing frames over, with its window and vertex counts, size, back buffer and queue: the
+  live log of 2026-10-05 had no line at all for the renderer after the restore.
+
 ## 5. Input
 
 ### What the win32 backend does and does not do
@@ -1023,3 +1057,262 @@ wrong.
   target. If `ImGui_ImplDX12_CreateDeviceObjects` fails it asserts inside
   `ImGui_ImplDX12_NewFrame` (`:988-990`); handle that rather than letting an assert fire
   inside the game's present path.
+- **What the game does with keys while it is minimized.** See section 9: the overlay and
+  the host now say so in their logs, and the live test in the Virindi Tank repository's
+  `docs/live-tests/minimized-plan.md` settles it.
+
+## 9. Playing while the game is minimized
+
+The player wants to minimize AC:Unreal to spare the machine and leave Virindi Tank and
+Decal playing, as they could with classic Decal. Everything a plugin does over the
+network keeps working whatever the window does. Walking does not: it is done with the
+game's own keys, posted to its window by the overlay (section 5 and `input.h`). Until
+this section's work, those keys were pressed and let go only from the `Present` hook.
+
+### What AC:Unreal and Unreal do with a minimized window
+
+Three kinds of evidence, kept apart.
+
+**Read from this client** (the binary's strings and imports, `Saved/Logs`, `Saved/Config`):
+
+- The game runs **windowed**: `GameUserSettings.ini` has `FullscreenMode=2`.
+- **The game thread keeps ticking unthrottled in the background.** The frame counter in
+  `ACUnreal.log` advances at about 250 frames a second across hours of idle play, for
+  example 02:13 to 13:47 UTC on 2026-10-05. Nothing caps it: no `t.MaxFPS` or
+  `FrameRateLimit` in `GameUserSettings.ini` or in the logged `Set CVar` lines.
+- **Unreal has a dedicated minimized path.** The binary has `t.IdleWhenNotForeground`,
+  whose help reads "Prevents the engine from taking any CPU or GPU time while not the
+  foreground app.". The client never sets it, and a minimized client keeps its server
+  session, which it could not do while idle. The binary also has
+  `tick.MinimizedSyncDrawToGPU`, whose help reads "True means we will wait for GPU idle
+  when minimized. Prevents mem leaks due to CPU issuing draws faster than GPU processes
+  when minimized.". So the engine still ticks and issues work while minimized.
+- **Keyboard input comes only from the window's own messages.** The input plugins mounted
+  are `EnhancedInput`, `InputDebugging`, `XInputDevice` and `OpenXR`; there is no
+  `GameInput` plugin, despite the README's mention of the GameInput runtime. The log sets
+  `WindowsApplication.UseWorkerThreadForRawInput 0`; raw input (`GetRawInputData`,
+  `RegisterRawInputDevices`) is the mouse's.
+- **The client watches whether it is the active app**, at least for sound: its settings
+  carry `ActiveSoundOnly=1`.
+- **Posted keys move the character while the game is in the background.** The live
+  navigation tests showed this while the player used other windows.
+
+**From Epic's UE5 source** (the published 5.x engine, not this build's 5.8, which is not
+available here; read, not tested):
+
+- `FWindowsApplication` defers `WM_KEYDOWN` and `WM_KEYUP` for its windows and hands them
+  to Slate on its next tick. It does not ask whether the window is active or minimized.
+  Bit 30 of `lParam` becomes `IsRepeat`.
+- `WM_SIZE` with `SIZE_MINIMIZED` reaches `FSlateApplication::OnSizeChanged` with
+  `bWasMinimized`, and Slate skips drawing a minimized window
+  (`DrawWindowAndChildren` checks `IsWindowMinimized`, which is `IsIconic`). Slate's draw is
+  where the swap chain is presented, so **a minimized game presents few frames or none**.
+- Slate routes a key along the user's focus path. Deactivating the app does not clear the
+  game viewport's focus, which is why background keys work.
+- **`UGameViewportClient::LostFocus` calls `FlushPressedKeys`** on every player
+  controller. When the viewport loses focus (deactivation, minimizing) Unreal releases
+  every key it thinks is held. A key the overlay holds but does not post again stays up
+  until the next change.
+- A game build has no background frame cap of its own. `t.MaxFPS` always applies, and the
+  editor's "throttle CPU when not foreground" is the editor's.
+
+**Assumed until the live test settles it:**
+
+- That this client presents no frames while minimized. The overlay now logs it.
+- That it acts on posted keys while minimized. This is likely, because the Slate path is
+  the background path. But `ACEClient`'s own movement code may check the window, which
+  nothing here can see. The overlay and the host now detect this and say so.
+- Whether `ACEClient` reads movement through `PlayerInput`/Enhanced Input, which
+  `FlushPressedKeys` reaches, or through an input preprocessor of its own, which it does
+  not.
+- That a minimized client finishes a teleport and sends `LoginComplete` without drawing.
+  Its game thread ticks, so probably yes.
+
+### Held keys: a pump of their own
+
+`KeyPump` (`input.h`) and its thread in `hooks.cpp` take the held keys off `Present`
+entirely.
+
+- The pump runs on its own thread, started with the pipe on the first frame the renderer
+  is ready for.
+  - The pipe's thread wakes it when the host sends a set (`Ipc::SetKeysListener`).
+    Otherwise it looks every `kKeyPumpIntervalMs` (100 ms).
+  - Each pass reads the host's wish and its age, lets go of everything if the host is
+    disconnected or quiet for `kHeldKeysStaleMs`, and applies the result. The stale-key
+    safety therefore no longer depends on frames.
+- Keys are touched under `g_keysGate`, a lock of their own. The pump never waits behind
+  a frame being drawn, and a frame never waits behind the pump. The window handle and the
+  frame count are atomics.
+- **Pressed again after the window changes.** The window procedure notes `WM_ACTIVATE`,
+  `WM_ACTIVATEAPP`, `WM_SETFOCUS`, `WM_KILLFOCUS` and `WM_SIZE` (minimized, restored,
+  maximized).
+  - `kPressAgainAfterMs` (250 ms) later, the pump posts a fresh key-down for every held
+    key. The delay lets Unreal's own flush, done on its tick after the message, come
+    first.
+  - Nothing is released first. A release would stop a run for a frame, and it would end
+    a jump's charge in a jump.
+  - This mends the flush described above, which also stopped runs when the player merely
+    switched windows.
+- Unloading stops the pump before the pipe goes, then lets go of every key. The stop's
+  wait is bounded, because under the loader lock a thread cannot finish exiting.
+- The wake event is never closed. The window procedure can still be on its way in, and a
+  closed handle's number can be reused.
+
+### Diagnostics
+
+- **The overlay's log** (`ACUnrealOverlay.log`):
+  - "The game window is minimized, and presents no frames." (or "still presents
+    frames"), "...shown, and presents frames.", "...off-screen in place of minimized".
+    One line each time the state changes.
+  - "Holding keys 87,65 while the game window is minimized; no frame presented for
+    12.3 s, 0 in the last 10.0 s." Said when it starts, then every
+    `kMinimizedNoteEveryMs` (10 s) while it lasts.
+  - "Pressed keys 87 again after the game window changed; it is minimized." Capped at
+    100.
+  - "Letting go of keys 87,65: the host has not repeated them for over a second." (or
+    "the host is not connected").
+  - "Parked the game window off-screen ..." and "Put the game window back at ...: <why>."
+- **The host** is told the window's state by a `game-window` command,
+  `minimized,drawing,parked`, each 0 or 1. It is sent when the state changes and afresh
+  to each host that connects.
+  - The state becomes `IHost.GameWindow`, logged when it changes and shown by
+    `ctl status` and `ctl window`.
+- **Keys the game ignores.** The host counts the client's own position reports
+  (`CharacterState.ClientReports`: each MoveToState and AutonomousPosition).
+  - Movement keys held three seconds since a change the client has not answered are
+    `IGameInput.Unheeded`.
+  - The wait runs from the first unanswered change, so a mover's frequent turns cannot
+    put it off.
+  - A wall does not count: the client still reports every key change.
+  - The log says it once, with the window's state ("...the game is not taking keys while
+    it is minimized"), and again when the client answers.
+- **Virindi Tank.** Its mover lets go of unheeded keys and reports `Stuck`, the snag
+  every caller already handles: navigation retries in 5 s, combat counts a failed
+  approach, looting leaves the corpse 10 s.
+  - It says once, in the game's chat: "Movement isn't possible while AC:Unreal is
+    minimized ...". It says it again after a move next arrives.
+
+### The fallback: parking in place of minimizing
+
+If the game does not take keys while minimized, the reliable answer is not to let it be
+minimized. "Keep playing while the game is minimized" is off by default. It can be
+switched three ways:
+- the checkbox on Decal's Options page, remembered between sessions;
+- `ctl window keep on|off`;
+- `--set Overlay:KeepPlayingMinimized=on`.
+
+It reaches the overlay in every snapshot (`keep_playing_minimized`).
+
+**When the player minimizes** (`WM_SYSCOMMAND`/`SC_MINIMIZE`: the title-bar button, the
+window menu, a taskbar click on the window in front):
+- The overlay moves the window off every monitor, left of the virtual screen by its own
+  width, at its own height and size.
+- It puts the window at the bottom of the Z order and gives the foreground to the window
+  minimizing would have activated.
+- While parked, `Present` is paced to `kParkedFrameMs` (33 ms, about 30 frames a second).
+  Sleeping in the hook holds up the render thread, so the game thread slows with it, but
+  it still ticks, takes keys and keeps its server session.
+- Unreal never sees a minimized window, so input behaves exactly as in the background,
+  which works.
+
+**It comes back** where it was:
+- when it is activated: a taskbar click, Alt+Tab, a click on its thumbnail. The move is
+  made before Unreal handles the activation and confines the cursor.
+- on a second minimize;
+- when the switch goes off: it is then minimized for real, as the player asked;
+- when the host has been gone for 10 s: minimized for real;
+- when the game closes or the session ends (`WM_CLOSE`, `WM_QUERYENDSESSION`,
+  `WM_DESTROY`), so a client that saves its window position never saves it off-screen;
+- when the overlay unloads: minimized for real.
+
+**Trade-offs, stated plainly:**
+
+- It is not minimized. At 30 frames a second the game still costs some CPU and GPU, far
+  less than the uncapped ~250 shown but more than a game that presents nothing.
+- 30 frames a second coarsens key timing to 33 ms. At 180 degrees a second that is about
+  6 degrees of turn per frame. The mover corrects with another pulse, and
+  arrival is judged from the client's own reports.
+- Only an ordinary window with a title bar is parked. A maximized or full-screen window
+  minimizes as before, and the log says why.
+- Only `SC_MINIMIZE` is intercepted. Win+D, Win+M, and other programs calling
+  `ShowWindow` still minimize. The diagnostics cover those.
+- The taskbar thumbnail shows a window nobody can see.
+- If the overlay died without unloading, the game died with it. If the host goes, the
+  window comes back after 10 s. A window somehow left off-screen comes back with
+  Shift+right-click on its taskbar button, Move, then an arrow key, or with Win+Shift+Left.
+
+**Rejected:**
+
+- **Posting `WM_ACTIVATEAPP` or `WM_ACTIVATE(WA_ACTIVE)` before keys.**
+  - Unreal would believe it is the active app, give its viewport focus, and capture and
+    confine the cursor (`SetCapture`, `ClipCursor`) to a window that is minimized or
+    behind. That takes the player's mouse while they use something else.
+  - It would also fight the real activation state, and it is not needed: background
+    keys work unactivated.
+- **Lowering the frame rate through a cvar (`t.MaxFPS`).**
+  - No outside process can reach the console. The Development build's console is the
+    local keyboard and `-ExecCmds` at start.
+  - Finding `IConsoleManager` in a stripped 342 MB executable needs a pattern scan that
+    breaks with every release.
+  - Pacing `Present` gives the same saving with nothing to find.
+- **Shrinking the window instead of moving it.** Unreal and the client lay out again, and
+  the client keeps its panels' places relative to the window (`[ACEClient.DatHUD]` in
+  `GameUserSettings.ini`), so the player's layout would be at risk.
+- **Hiding the window (`SW_HIDE`).** That takes away the taskbar button the player brings
+  it back with.
+- **`SendInput`.** It reaches only the foreground window.
+
+### Every path from a plugin to the game, minimized
+
+Classes: **N**, network, injected into the client's or the server's stream. **K**, held
+keys. **C**, needs the client itself to act. **O**, needs the overlay to draw. **T**, the
+host's timers.
+
+| Path | Class | Minimized, before | Minimized, now |
+|---|---|---|---|
+| Use, appraise, move, drop, give, salvage (`ClientActions`), stance, wield, kits, food, mana stones, wands | N | works | works |
+| Melee and missile attacks: power is a field of the message; no attack bar | N | works | works |
+| Target choice: the id travels in the attack or cast; the protocol has no select message | N | works | works |
+| Casting: buffs, debuffs, recharge, recall | N | works | works |
+| Looting: corpse open and close, item moves, stacking and cram (`StackCram`) | N | works | works |
+| Portals, NPCs, vendor open, doors (`Doors`, `Navigation`) | N | works | works |
+| Portal space entry (the server's teleport) | N | works | works |
+| Portal space exit: only the client's own `LoginComplete` clears it | C | assumed to work: the game thread ticks | same; certain when parked |
+| Chat to the server: speech, tells, `/f` `/a` `/ls` `@` commands (`ClientCommands`) | N | works | works |
+| `ShowInGame`: Decal's `AddChatText`, VT's chat lines | N (server→client) | works | works |
+| Client-only lines: emotes the client plays, `/framerate`, `/loc`, `/saveui`, ... | C | refused, as when shown | unchanged: refused, and said |
+| Plugin commands the player types into the game's chat box | C | needs the player at the game | unchanged; `ctl say` works meanwhile |
+| Walking: route, follow, corpse and monster approach, unstick, facing a target, the checkpoint nudge | K | keys pressed only on frames; a held key never let go if the host went quiet | pumped without frames; if ignored, `Unheeded`, Stuck and said; parked: works |
+| Jumps; fast-cast (holds Backward; the cast itself is N) | K | as walking | pumped; a jump the game ignores is retried every 15 s (VT's rule); parked: works |
+| Fallback steering by movement messages (`ActionSteering`) | N | only without the overlay; the server may ignore it | unchanged |
+| Fellow healing: needs the client's fellowship panel open | C | as when shown | unchanged |
+| Injected actions leave inside the client's own packets | N | paced by the client's traffic, which a ticking client keeps up | unchanged |
+| Position, heading and motion come only from the client's reports | C | none while the client does not move | unchanged; their absence is now the signal |
+| The overlay's pipe: snapshots, images, keys in, commands out | own thread | started on the first frame; keys applied only on frames | keys pumped on their own thread |
+| The overlay's windows, clicks and art requests | O | not drawn | not drawn; nothing to click minimized |
+| Hotkeys and key capture: real key presses in the window procedure | needs focus | not while another window has the keyboard | unchanged |
+| The host's tick (100 ms), key repeat (300 ms), snapshots (250 ms), mover timers | T | works | works |
+
+The overlay's pipe is started on the first frame the renderer is ready for. An overlay
+injected while the game is already minimized waits for the first frame after it comes
+back.
+
+### Minimized frames and where windows are saved
+
+A frame or two can be presented after the window is already iconic. Its client area is then
+0 x 0, and Unreal's back buffers 8 x 8. The first build drew such a frame: `KeepOnScreen`, which
+holds a hudified window inside the screen, put every hudified window at the top left corner of
+a screen of no size - its frame and title bar off it, -5,-20 in VVS's Float theme - and ImGui
+saved that. Three of Virindi Tank's HUDs were saved there on 2026-10-05. ImGui's own clamp
+already ignores a display of no size; ours did not.
+
+- Such a frame is not drawn at all (section 4), `DrawOverlay` submits nothing on a display under
+  100 x 100, and `KeepOnScreen` moves nothing there. Self-test 23 and render test 2 check it.
+- **Repair:** once a session, the first time each window is drawn, `PlaceOnDisplayOnce` looks
+  at where the ini put it. A window not wholly on the display - a hudified one may have its
+  frame and title bar off the edges, as `KeepOnScreen` allows - goes back where it would have
+  started: for a Decal or VVS view, where the host says it was left (vvs.s3db, or Virindi HUDs'
+  own settings for a HUD), else its cascade place; for Decal's bar along the top, its start. So
+  does a hudified window in the corner a screen of no size gives, stuck to neither edge: one the
+  player pushes into the corner is stuck to both. Each such move is logged as "Put ... back
+  where it starts".

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>VirindiHotkeySystem</RootNamespace>
+    <AssemblyName>VirindiHotkeySystem</AssemblyName>
+    <Description>Virindi Hotkey System's plugin API - VHotkeySystem and VHotkeyInfo - for Decal plugins that bind their actions to keys through it, as Mag-Tools does at login; the hotkeys are the AC host's, listed and pressed in its own hotkey windows.</Description>
+    <!-- The version Mag-Tools was built against, and the last one released. Like VVS, VHS was
+         never strong-named, so the name and version are the whole of its identity. -->
+    <AssemblyVersion>1.0.0.6</AssemblyVersion>
+    <FileVersion>1.0.0.6</FileVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The compatibility plugin lists the hotkeys in the host's windows and fires them, and
+         lets a stopped plugin's go. -->
+    <InternalsVisibleTo Include="Decal.Compat" />
+    <InternalsVisibleTo Include="AC.Host.Tests" />
+  </ItemGroup>
+
+</Project>

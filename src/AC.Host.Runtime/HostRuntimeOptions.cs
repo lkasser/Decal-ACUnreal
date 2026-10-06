@@ -68,6 +68,20 @@ namespace AC.Host.Runtime
         /// </summary>
         public bool NoHandover { get; set; }
 
+        /// <summary>
+        /// The game client's own log, read for which screen it shows (<see cref="ClientLog"/>): null
+        /// to find the running client's when relaying a live game, and nothing otherwise; empty for
+        /// none; or the file to read.
+        /// </summary>
+        public string ClientLogPath { get; set; }
+
+        /// <summary>
+        /// The game client's Saved folder, read - never written - for its own plugins and its Desktop
+        /// UI Scale (<see cref="ClientSettingsWatcher"/>): null to find the client's when relaying a
+        /// live game, and nothing otherwise; empty for none; or the folder to read.
+        /// </summary>
+        public string ClientSettingsFolder { get; set; }
+
         /// <summary>Settings a plugin can read, keyed "Plugin:Key", as <c>--set</c> gives them.</summary>
         public Dictionary<string, string> Settings { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 

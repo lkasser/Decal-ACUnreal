@@ -237,6 +237,13 @@ namespace AC.Host.World
 
         public ClientMotionState Motion { get; internal set; }
 
+        /// <summary>
+        /// Counts the client's own reports of where the character is - each MoveToState and
+        /// AutonomousPosition - so that a report saying nothing new still counts as an answer. Kept
+        /// across logins; only its movement means anything.
+        /// </summary>
+        public long ClientReports { get; internal set; }
+
         public uint SelectedId { get; internal set; }
 
         public MovementSequences Sequences { get; internal set; }

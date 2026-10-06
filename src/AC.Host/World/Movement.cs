@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace AC.Host.World
 {
     /// <summary>What kind of movement a motion message describes.</summary>
@@ -61,6 +64,13 @@ namespace AC.Host.World
 
         /// <summary>True when the client asked for this rather than the server.</summary>
         public bool IsAutonomous { get; internal set; }
+
+        /// <summary>
+        /// The one-off motions queued with an interpreted state, in order, each as the low half
+        /// of its motion command: 0x007E for the clap the server plays when a character crafts
+        /// (ClapHands, 0x1300007E), 0x0087 for a wave. Empty for none.
+        /// </summary>
+        public IReadOnlyList<ushort> Actions { get; internal set; } = Array.Empty<ushort>();
 
         /// <summary>
         /// Whether the object is travelling under its own power right now. A stance

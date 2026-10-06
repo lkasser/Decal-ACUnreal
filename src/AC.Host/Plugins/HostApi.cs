@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace AC.Host.Plugins
 {
@@ -90,9 +90,39 @@ namespace AC.Host.Plugins
         /// VVS's own controls and windows did that Decal's did not: a Tooltip on any control; a
         /// StaticText's FontFace, FontPoints, VerticalCenter and Clicked; the Picture and TextConsole
         /// controls; an Edit's Entered and RequestFocus; and a DecalView's Location, its least and
-        /// most size and Resized, raised when the player resizes it by its frame.
+        /// most size and Resized, raised when the player resizes it by its frame. And for a player
+        /// who minimizes the game and leaves the plugins playing: IHost.GameWindow, what the game's
+        /// window is doing - minimized, drawing, parked off-screen in place of minimized - as the
+        /// overlay says; and IGameInput.Unheeded, movement keys held three seconds without a word
+        /// from the client, so a mover can let go of keys the game is not taking.
+        /// And IGameActions.GiveAsync, handing an item to a player or an NPC - what Decal's
+        /// GiveItem did, and Virindi Tank's meta function actiontrygiveitem[] with it.
+        /// And going between the world and the character list without the password:
+        /// IGameActions.LogOutAsync and EnterWorldAsync, which Decal's Hooks.Logout now uses;
+        /// IHost.LoggingOff, the logoff asked for and not yet done - Decal's Logoff when Requested -
+        /// before LoggedOff; and IWorldView.Phase, where the session stands, with a default.
+        /// And for crafting and the client's chat emotes: MovementState.Actions, the one-off motions
+        /// queued with a motion - the clap the server plays for a craft - and ClientMotionState.Actions,
+        /// those a MoveToState carries, which MoveAsync now sends; and IGameData.GetChatEmote, the
+        /// emote a "*dance*" names in the client's ChatPoseTable, which has a default.
+        /// And what Mag-Tools asks of Decal: the fellowship panel's buttons on IGameActions -
+        /// FellowshipRecruitAsync, FellowshipQuitAsync, FellowshipDismissAsync,
+        /// FellowshipAssignLeaderAsync and FellowshipSetOpenAsync; IGameInput.HoldKey, any key held
+        /// by its code, for the keys a Decal plugin posts to the game's window; and
+        /// IHost.UpdateStatusRow with IStatusRows, a row put on the Status HUD another plugin shows,
+        /// as Virindi HUDs' StatusModel took them. Each has a default, so another implementation
+        /// needs nothing.
+        ///
+        /// 12: adds IHost.ClientPlugins, AC:Unreal's own client plugins as the client's settings say
+        /// the player has switched them on - which are enabled, with which permissions - its
+        /// Unattended Combat Manager among them, so Virindi Tank can warn that two engines would
+        /// play one character. It has a default, so another implementation needs nothing.
+        /// And for Mag-Filter: IWorldView.CharacterSlots, how many characters the account may have
+        /// as the character list says - Decal's CharacterFilter.CharacterSlots, and the rows of the
+        /// old client's character select, which Mag-Filter's logins click - with a default, 0.
+        /// Both came after 11 was deployed, with the host of 2026-10-06 05:53.
         /// </remarks>
-        public const int Version = 11;
+        public const int Version = 12;
 
         /// <summary>
         /// The oldest contract this host will still load a plugin for.
